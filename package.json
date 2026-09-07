@@ -20,7 +20,9 @@
     "test:pr": "npx tsx --env-file=.env scripts/dry-run.ts",
     "test:e2e": "npx tsx --env-file=.env scripts/e2e-test.ts",
     "test:security": "npx tsx --env-file=.env scripts/credential-isolation.test.ts",
-    "test:phase7": "npx tsx --env-file=.env scripts/phase7-lifecycle.test.ts"
+    "test:phase7": "npx tsx --env-file=.env scripts/phase7-lifecycle.test.ts",
+    "browser:server": "npx tsx --env-file=.env server/browser-ws-server.ts",
+    "browser:install": "npx playwright install chromium"
   },
   "dependencies": {
     "@ai-sdk/google": "^0.0.55",
@@ -30,16 +32,19 @@
     "clsx": "^2.1.1",
     "lucide-react": "^0.453.0",
     "next": "^14.2.15",
+    "playwright": "^1.63.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.1",
     "remark-gfm": "^4.0.0",
-    "tailwind-merge": "^2.5.4"
+    "tailwind-merge": "^2.5.4",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
+    "@types/ws": "^8.18.1",
     "autoprefixer": "^10.4.20",
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.14",

@@ -1,11 +1,12 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Header } from '@/components/Header';
+import { Header, AgentMode } from '@/components/Header';
 import { Sidebar } from '@/components/Sidebar';
 import { ChatMessage, ChatMessageData } from '@/components/ChatMessage';
 import { PRPreviewModal } from '@/components/PRPreviewModal';
 import { SettingsModal } from '@/components/SettingsModal';
+import { BrowserAgentPanel } from '@/components/BrowserAgentPanel';
 import { GitHubIssueItem, PRResult } from '@/lib/github';
 import { KeyRotationStatus } from '@/lib/geminiRotator';
 import { Send, Sparkles, RefreshCw, GitPullRequest, Code2, Bot, Terminal } from 'lucide-react';
@@ -23,6 +24,7 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState<string>('');
   const [selectedTech, setSelectedTech] = useState<string[]>(['React', 'TypeScript', 'Node.js', 'MongoDB']);
+  const [agentMode, setAgentMode] = useState<AgentMode>('coding');
   
   // Credentials & Settings state
   const [githubToken, setGithubToken] = useState<string>('');
@@ -174,8 +176,13 @@ export default function Home() {
         rotatorStatus={rotatorStatus}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onNewChat={handleNewChat}
+        activeMode={agentMode}
+        onChangeMode={setAgentMode}
       />
 
+      {agentMode === 'browser' ? (
+        <BrowserAgentPanel />
+      ) : (
       <div className="flex flex-1 overflow-hidden relative">
         {/* Left Sidebar */}
         <Sidebar
@@ -270,6 +277,7 @@ export default function Home() {
           </div>
         </main>
       </div>
+      )}
 
       {/* PR Result Modal */}
       <PRPreviewModal

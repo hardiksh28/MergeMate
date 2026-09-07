@@ -1,16 +1,20 @@
 'use client';
 
 import React from 'react';
-import { GitPullRequest, RefreshCw, Key, Github, Sparkles, ShieldCheck } from 'lucide-react';
+import { GitPullRequest, RefreshCw, Key, Github, Sparkles, ShieldCheck, Bot, Monitor } from 'lucide-react';
 import { KeyRotationStatus } from '@/lib/geminiRotator';
+
+export type AgentMode = 'coding' | 'browser';
 
 interface HeaderProps {
   rotatorStatus: KeyRotationStatus | null;
   onOpenSettings: () => void;
   onNewChat: () => void;
+  activeMode?: AgentMode;
+  onChangeMode?: (mode: AgentMode) => void;
 }
 
-export const Header: React.FC<HeaderProps> = ({ rotatorStatus, onOpenSettings, onNewChat }) => {
+export const Header: React.FC<HeaderProps> = ({ rotatorStatus, onOpenSettings, onNewChat, activeMode = 'coding', onChangeMode }) => {
   return (
     <header className="sticky top-0 z-30 w-full glass-panel border-b border-slate-800/80 px-4 py-3 flex items-center justify-between">
       {/* Brand Identity */}
@@ -38,6 +42,30 @@ export const Header: React.FC<HeaderProps> = ({ rotatorStatus, onOpenSettings, o
 
       {/* Control Status Pills */}
       <div className="flex items-center gap-2.5">
+        {/* Agent Mode Switcher */}
+        {onChangeMode && (
+          <div className="hidden sm:flex items-center gap-1 p-1 rounded-lg bg-slate-900/90 border border-slate-800">
+            <button
+              onClick={() => onChangeMode('coding')}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                activeMode === 'coding' ? 'bg-indigo-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="Autonomous Coding Agent (GitHub API)"
+            >
+              <Bot className="w-3.5 h-3.5" /> Coding Agent
+            </button>
+            <button
+              onClick={() => onChangeMode('browser')}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-colors ${
+                activeMode === 'browser' ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+              title="Browser Agent (Live Playwright Stream)"
+            >
+              <Monitor className="w-3.5 h-3.5" /> Browser Agent
+            </button>
+          </div>
+        )}
+
         {/* Gemini Rotator Pill */}
         <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900/90 border border-slate-800 text-xs">
           <div className="flex items-center gap-1.5 text-slate-300">
