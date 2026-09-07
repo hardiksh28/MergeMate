@@ -1,0 +1,49 @@
+{
+  "name": "mergemate",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "npx tsx --env-file=.env scripts/pr-lifecycle.test.ts",
+    "test:lifecycle": "npx tsx --env-file=.env scripts/pr-lifecycle.test.ts",
+    "test:lifecycle:live": "npx tsx --env-file=.env scripts/pr-lifecycle-live-test.ts",
+    "test:lifecycle:controlled": "npx tsx --env-file=.env scripts/controlled-lifecycle-live-test.ts",
+    "test:review": "npx tsx --env-file=.env scripts/review-lifecycle.test.ts",
+    "test:review:controlled": "npx tsx --env-file=.env scripts/controlled-review-live-test.ts",
+    "test:phase5": "npx tsx --env-file=.env scripts/phase5-verification.test.ts",
+    "test:benchmark": "npx tsx --env-file=.env scripts/realistic-repo-benchmark.test.ts",
+    "test:agent": "npx tsx --env-file=.env scripts/agent-e2e.test.ts",
+    "test:validation": "npx tsx --env-file=.env scripts/validate-pipeline.test.ts",
+    "test:pr": "npx tsx --env-file=.env scripts/dry-run.ts",
+    "test:e2e": "npx tsx --env-file=.env scripts/e2e-test.ts",
+    "test:security": "npx tsx --env-file=.env scripts/credential-isolation.test.ts",
+    "test:phase7": "npx tsx --env-file=.env scripts/phase7-lifecycle.test.ts"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^0.0.55",
+    "@google/generative-ai": "^0.21.0",
+    "@octokit/rest": "^20.1.1",
+    "ai": "^3.4.33",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.453.0",
+    "next": "^14.2.15",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0",
+    "tailwind-merge": "^2.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}
