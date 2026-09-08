@@ -140,24 +140,132 @@ const geminiTools = [
   },
 ];
 
+function inferExecutionMode(text: string): 'analyze' | 'fix' | 'autonomous' {
+  const lower = text.toLowerCase();
+  if (lower.includes('analyze')) return 'analyze';
+  if (lower.includes('fix only')) return 'fix';
+  return 'autonomous';
+}
+
 export async function POST(req: NextRequest) {
   let userToken = '';
   let userKeys: string[] = [];
   let messages: any[] = [];
 
-  try {
-    const body = await req.json();
-    messages = body.messages || [];
-    userToken = body.userToken || '';
-    userKeys = body.userKeys || [];
+  const body = await req.json();
+  messages = body.messages || [];
+  userToken = body.userToken || '';
+  userKeys = body.userKeys || [];
 
-    const latestUserMessage = messages[messages.length - 1]?.content || 'Hello';
+  const latestUserMessage = messages[messages.length - 1]?.content || 'Hello';
 
-    // Fast Path: Check if user pasted a specific issue URL and wants autonomous execution
-    const specificTarget = parseIssueTarget(latestUserMessage);
+  // Deterministic Fast Path: a pasted issue URL / owner/repo#123 shorthand is
+  // routed straight into the workflow instead of asking Gemini's own tool
+  // router to notice it — that routing is an LLM judgment call and can (and
+  // did) misfire on paraphrased prompts, silently landing on an unrelated
+  // repository. A regex match on the user's literal text can't misfire.
+  const specificTarget = parseIssueTarget(latestUserMessage);
 
+  const encoder = new TextEncoder();
+  // ReadableStream invokes `start` synchronously during construction, so
+  // controllerRef is always assigned before send()/close() can run.
+  let controllerRef!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controllerRef = controller;
+    },
+  });
+
+  const send = (obj: any) => {
+    controllerRef.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
+  };
+
+  const runFallback = async (reason: any) => {
+    console.warn('[Gemini Engine Fallback Triggered]', reason?.message || reason);
+    const userText = messages[messages.length - 1]?.content || '';
+    const toolExecutions: any[] = [];
+
+    const agentResult = await runAutonomousAgentWorkflow({
+      userInput: userText,
+      userToken,
+      executionMode: inferExecutionMode(userText),
+      onStepProgress: (step) => send({ type: 'step', step }),
+    });
+
+    if (agentResult.prResult) {
+      toolExecutions.push({
+        toolName: 'create_pull_request',
+        status: agentResult.prResult.success ? 'completed' : 'cancelled',
+        data: agentResult.prResult,
+      });
+    } else if (agentResult.issue) {
+      toolExecutions.push({
+        toolName: 'search_issues',
+        status: 'completed',
+        data: [agentResult.issue],
+      });
+    }
+
+    send({
+      type: 'final',
+      text: agentResult.summaryMessage,
+      toolExecutions,
+      agentExecutionSteps: agentResult.executionSteps,
+      rotationStatus: getRotationStatus(userKeys),
+    });
+  };
+
+  (async () => {
+    try {
+      if (specificTarget) {
+        const agentResult = await runAutonomousAgentWorkflow({
+          userInput: latestUserMessage,
+          userToken,
+          executionMode: inferExecutionMode(latestUserMessage),
+          onStepProgress: (step) => send({ type: 'step', step }),
+        });
+
+        const toolExecutions: any[] = [];
+        if (agentResult.prResult) {
+          toolExecutions.push({
+            toolName: 'create_pull_request',
+            status: agentResult.prResult.success ? 'completed' : 'cancelled',
+            data: agentResult.prResult,
+          });
+        } else if (agentResult.issue) {
+          toolExecutions.push({
+            toolName: 'search_issues',
+            status: 'completed',
+            data: [agentResult.issue],
+          });
+        }
+
+        send({
+          type: 'final',
+          text: agentResult.summaryMessage,
+          toolExecutions,
+          agentExecutionSteps: agentResult.executionSteps,
+          rotationStatus: getRotationStatus(userKeys),
+        });
+        return;
+      }
+
+      const result = await runGeminiToolRouting();
+      send({ type: 'final', ...result });
+    } catch (error: any) {
+      try {
+        await runFallback(error);
+      } catch (fallbackError: any) {
+        send({ type: 'error', error: fallbackError?.message || 'MergeMate engine failed.' });
+      }
+    } finally {
+      controllerRef.close();
+    }
+  })();
+
+  async function runGeminiToolRouting() {
     // Attempt primary Gemini API function calling
-    const result = await executeWithRotation(async (apiKey) => {
+    return executeWithRotation(async (apiKey) => {
       const genAI = new GoogleGenerativeAI(apiKey);
       
       const priorMessages = messages.slice(0, -1);
@@ -287,6 +395,7 @@ export async function POST(req: NextRequest) {
               userToken,
               executionMode: args.executionMode || 'autonomous',
               targetOrg: args.company || undefined,
+              onStepProgress: (step) => send({ type: 'step', step }),
             });
             toolOutput = agentResult;
             toolExecutions.push({
@@ -337,42 +446,14 @@ export async function POST(req: NextRequest) {
         rotationStatus: getRotationStatus(userKeys),
       };
     }, userKeys);
-
-    return NextResponse.json(result);
-  } catch (error: any) {
-    console.warn('[Gemini Engine Fallback Triggered]', error?.message || error);
-
-    // Autonomous Coding Agent Engine Fallback Mode
-    const userText = messages[messages.length - 1]?.content || '';
-    const toolExecutions: any[] = [];
-
-    const agentResult = await runAutonomousAgentWorkflow({
-      userInput: userText,
-      userToken,
-      executionMode: userText.toLowerCase().includes('analyze') ? 'analyze' : userText.toLowerCase().includes('fix only') ? 'fix' : 'autonomous',
-    });
-
-    if (agentResult.prResult) {
-      toolExecutions.push({
-        toolName: 'create_pull_request',
-        status: agentResult.prResult.success ? 'completed' : 'cancelled',
-        data: agentResult.prResult,
-      });
-    } else if (agentResult.issue) {
-      toolExecutions.push({
-        toolName: 'search_issues',
-        status: 'completed',
-        data: [agentResult.issue],
-      });
-    }
-
-    return NextResponse.json({
-      text: agentResult.summaryMessage,
-      toolExecutions,
-      agentExecutionSteps: agentResult.executionSteps,
-      rotationStatus: getRotationStatus(userKeys),
-    });
   }
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+    },
+  });
 }
 
 export async function GET() {

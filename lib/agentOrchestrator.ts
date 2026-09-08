@@ -287,19 +287,14 @@ export function verifyCodeSyntaxAndTypes(
     return { isValid: errors.length === 0, errors };
   }
 
-  // Markdown, CSS, YAML, text, SQL, and other non-TS/JS files — none of
-  // these are valid TypeScript, so running them through the TS AST parser
-  // below produces a flood of meaningless "syntax errors" rather than any
-  // real signal.
-  if (
-    filePath.endsWith('.md') ||
-    filePath.endsWith('.txt') ||
-    filePath.endsWith('.css') ||
-    filePath.endsWith('.yml') ||
-    filePath.endsWith('.yaml') ||
-    filePath.endsWith('.sql') ||
-    filePath.endsWith('.prisma')
-  ) {
+  // The TS AST parser only produces real signal for actual JS/TS source —
+  // everything else (Markdown, CSS, YAML, SQL, shell scripts, Makefiles,
+  // Dockerfiles, extensionless config files, ...) reads as a flood of
+  // meaningless "syntax errors" once run through it. Allowlist the file
+  // types the parser can actually validate rather than trying to enumerate
+  // every non-JS/TS extension that exists.
+  const jsTsExtensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'];
+  if (!jsTsExtensions.some((ext) => filePath.endsWith(ext))) {
     return { isValid: true, errors: [] };
   }
 
@@ -1462,7 +1457,7 @@ export async function runAutonomousAgentWorkflow(
   // -------------------------------------------------------------
   pushStep('VERIFYING_FINAL_CHANGES', 'Verifying Complete Multi-File Diff', `Confirming diff bounds across ${currentPatchSet.changes.length} files...`);
   pushStep('FINAL_VALIDATION', 'Final GitHub Issue Re-Check', `Verifying issue #${selectedIssue.number} is still open and unassigned on live GitHub...`);
-  pushStep('CREATING_PR', 'Executing Fork & Pull Request Workflow', `Opening Cross-Repo PR on ${selectedIssue.owner}/${selectedIssue.repo}...`);
+  pushStep('CREATING_PR', 'Forking Repository & Pushing Branch', `Committing verified fix to a branch on your fork of ${selectedIssue.owner}/${selectedIssue.repo} (PR submission stays manual)...`);
 
   const commitMsg = `fix(${selectedIssue.repo}): resolve issue #${selectedIssue.number} across ${currentPatchSet.changes.length} files`;
   const prTitle = `fix: resolve issue #${selectedIssue.number} - ${selectedIssue.title.slice(0, 50)}`;
@@ -1501,7 +1496,7 @@ export async function runAutonomousAgentWorkflow(
   pushStep('COMPLETED', 'Workflow Complete', `Final Decision: ${decisionMetrics.finalDecision}`, 'completed');
 
   const finalSummary = prResult.success
-    ? `🎉 **Autonomous Multi-File PR Prepared!**\n\n- **Decision:** \`${decisionMetrics.finalDecision}\`\n- **Target Issue:** [#${selectedIssue.number} in \`${selectedIssue.repo_full_name}\`](${selectedIssue.html_url})\n- **Branch:** \`${prResult.branchName}\`\n- **PR Link:** ${prResult.prUrl ? `[View Pull Request on GitHub](${prResult.prUrl})` : 'Simulated / Demo Mode'}\n- **Files Coordinated (${currentPatchSet.changes.length}):** \`${targetFiles.join('`, `')}\`\n- **Decision Reason:** ${decisionMetrics.decisionReason}\n\n**Summary of Changes Applied:**\n${plan.patchStrategy}`
+    ? `🎉 **Code Fix Ready — Your Review Needed to Submit**\n\n- **Decision:** \`${decisionMetrics.finalDecision}\`\n- **Target Issue:** [#${selectedIssue.number} in \`${selectedIssue.repo_full_name}\`](${selectedIssue.html_url})\n- **Branch pushed:** \`${prResult.branchName}\` on your fork \`${prResult.forkOwner}/${selectedIssue.repo}\`\n- **Files Coordinated (${currentPatchSet.changes.length}):** \`${targetFiles.join('`, `')}\`\n- **Decision Reason:** ${decisionMetrics.decisionReason}\n\n**Summary of Changes Applied:**\n${plan.patchStrategy}\n\n${prResult.compareUrl ? `👉 **[Open the Pull Request on GitHub](${prResult.compareUrl})** and click "Create pull request" to submit — MergeMate stages the fix but never submits it for you.` : ''}`
     : `⚠️ **PR Workflow Notice**: ${prResult.message}`;
 
   return {

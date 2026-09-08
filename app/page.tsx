@@ -110,6 +110,21 @@ export default function Home() {
     setIsLoading(true);
     setLoadingStep('Understanding task & exploring repository...');
 
+    // Seed a live assistant message now — its step timeline fills in as
+    // MergeMate actually does the work, instead of appearing all at once
+    // after the whole pipeline finishes.
+    const assistantId = (Date.now() + 1).toString();
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        agentExecutionSteps: [],
+      },
+    ]);
+
     try {
       const apiMessages = [...messages, userMessage].map((m) => ({
         role: m.role,
@@ -126,50 +141,88 @@ export default function Home() {
         }),
       });
 
-      const data = await res.json();
+      if (!res.body) throw new Error('No response stream from server.');
 
-      if (data.rotationStatus) {
-        setRotatorStatus(data.rotationStatus);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalEvent: any = null;
+      let errorEvent: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let evt: any;
+          try {
+            evt = JSON.parse(line);
+          } catch {
+            continue;
+          }
+
+          if (evt.type === 'step') {
+            setLoadingStep(evt.step?.title || loadingStep);
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? { ...m, agentExecutionSteps: [...(m.agentExecutionSteps || []), evt.step] }
+                  : m
+              )
+            );
+          } else if (evt.type === 'final') {
+            finalEvent = evt;
+          } else if (evt.type === 'error') {
+            errorEvent = evt.error;
+          }
+        }
       }
 
-      if (data.error) {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: (Date.now() + 1).toString(),
-            role: 'assistant',
-            content: `⚠️ **Engine Error**: ${data.error}. Please verify your Gemini API key in settings.`,
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          },
-        ]);
-      } else {
-        const assistantMessage: ChatMessageData = {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: data.text || 'I have completed the requested GitHub task.',
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          toolExecutions: data.toolExecutions,
-          agentExecutionSteps: data.agentExecutionSteps,
-        };
+      if (errorEvent) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? { ...m, content: `⚠️ **Engine Error**: ${errorEvent}. Please verify your Gemini API key in settings.` }
+              : m
+          )
+        );
+      } else if (finalEvent) {
+        if (finalEvent.rotationStatus) {
+          setRotatorStatus(finalEvent.rotationStatus);
+        }
 
-        setMessages((prev) => [...prev, assistantMessage]);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === assistantId
+              ? {
+                  ...m,
+                  content: finalEvent.text || 'I have completed the requested GitHub task.',
+                  toolExecutions: finalEvent.toolExecutions,
+                  agentExecutionSteps: finalEvent.agentExecutionSteps || m.agentExecutionSteps,
+                }
+              : m
+          )
+        );
 
-        // If PR creation tool was executed, auto-popup PR modal
-        const prTool = data.toolExecutions?.find((t: any) => t.toolName === 'create_pull_request');
+        // If a branch/patch was staged for PR, pop the manual-submit modal
+        const prTool = finalEvent.toolExecutions?.find((t: any) => t.toolName === 'create_pull_request');
         if (prTool && prTool.data && prTool.data.success) {
           setPrModalResult(prTool.data);
         }
       }
     } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          role: 'assistant',
-          content: `⚠️ Failed to connect to MergeMate API: ${err?.message || 'Network Error'}`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        },
-      ]);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantId
+            ? { ...m, content: `⚠️ Failed to connect to MergeMate API: ${err?.message || 'Network Error'}` }
+            : m
+        )
+      );
     } finally {
       setIsLoading(false);
       setLoadingStep('');

@@ -140,6 +140,11 @@ export interface PRResult {
   message: string;
   simulated?: boolean;
   diffPreview?: string;
+  /** Pre-filled GitHub "Open a pull request" URL — the user reviews and clicks "Create pull request" themselves; MergeMate never submits PRs automatically. */
+  compareUrl?: string;
+  prTitle?: string;
+  prBody?: string;
+  readyForManualSubmit?: boolean;
 }
 
 /**
@@ -1355,7 +1360,8 @@ export async function createPR(options: CreatePROptions): Promise<PRResult> {
       simulated: true,
       branchName: mockBranch,
       forkOwner: 'demo-bot',
-      prUrl: `https://github.com/${upstreamOwner}/${upstreamRepo}/pull/new/${mockBranch}`,
+      prTitle,
+      prBody,
       message: `[Demo Mode] GitHub Token not configured. Simulated Fork PR generated for ${upstreamOwner}/${upstreamRepo}#${issueNumber} (${multiChanges.length} files).`,
       diffPreview: multiChanges.map(c => `--- a/${c.filePath}\n+++ b/${c.filePath}\n${(c.content || '').slice(0, 200)}...`).join('\n\n'),
     };
@@ -1484,27 +1490,24 @@ export async function createPR(options: CreatePROptions): Promise<PRResult> {
       });
     }
 
-    // Step 6: Create Cross-Repo Pull Request targeting upstream repository
-    const headRef = `${forkOwner}:${branchName}`;
-    console.log(`[GitHub Engine] Opening PR on ${upstreamOwner}/${upstreamRepo} from ${headRef}...`);
-
-    const prRes = await octokit.rest.pulls.create({
-      owner: upstreamOwner,
-      repo: upstreamRepo,
-      title: prTitle,
-      body: prBody,
-      head: headRef,
-      base: defaultBranch,
-    });
+    // Step 6: Stage the Pull Request for manual submission. MergeMate never
+    // calls the GitHub "create pull request" API itself — it stops once the
+    // branch is pushed and hands the user a pre-filled compare URL so *they*
+    // click "Create pull request" on GitHub, under their own account.
+    const headRef = `${forkOwner}:${upstreamRepo}:${branchName}`;
+    const compareUrl = `https://github.com/${upstreamOwner}/${upstreamRepo}/compare/${defaultBranch}...${headRef}?expand=1&title=${encodeURIComponent(prTitle)}&body=${encodeURIComponent(prBody)}`;
+    console.log(`[GitHub Engine] Branch pushed. Staged (not submitted) PR from ${headRef} -> ${upstreamOwner}/${upstreamRepo}:${defaultBranch}`);
 
     return {
       success: true,
       simulated: false,
-      prUrl: prRes.data.html_url,
-      prNumber: prRes.data.number,
+      readyForManualSubmit: true,
+      compareUrl,
+      prTitle,
+      prBody,
       branchName,
       forkOwner,
-      message: `Cross-Repo PR #${prRes.data.number} successfully created on ${upstreamOwner}/${upstreamRepo} from fork ${headRef}!`,
+      message: `Branch \`${branchName}\` pushed to your fork \`${forkOwner}/${upstreamRepo}\`. Open the link below to review and submit the Pull Request yourself.`,
       diffPreview: multiChanges.map(c => `--- a/${c.filePath}\n+++ b/${c.filePath}\n${(c.content || '').slice(0, 300)}`).join('\n\n'),
     };
   } catch (error: any) {
@@ -1516,9 +1519,10 @@ export async function createPR(options: CreatePROptions): Promise<PRResult> {
       simulated: true,
       branchName: mockBranch,
       forkOwner: 'user',
-      prUrl: `https://github.com/${upstreamOwner}/${upstreamRepo}/issues/${issueNumber}`,
-      message: `Failed to open PR via Fork: ${error?.message || 'Access Error'}. Code fix generated successfully!`,
-      diffPreview: `--- a/${filePath}\n+++ b/${filePath}\n${generatedCode}`,
+      prTitle,
+      prBody,
+      message: `Failed to stage PR: ${error?.message || 'Access Error'}.`,
+      diffPreview: multiChanges.map(c => `--- a/${c.filePath}\n+++ b/${c.filePath}\n${(c.content || '').slice(0, 300)}`).join('\n\n'),
     };
   }
 }
