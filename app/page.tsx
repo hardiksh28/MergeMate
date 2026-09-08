@@ -178,7 +178,7 @@ export default function Home() {
 
   // Trigger automated fix when user clicks "Fix Code & Create PR" on an issue card
   const handleSelectToFix = (issue: GitHubIssueItem) => {
-    const promptText = `Please analyze issue #${issue.number} ("${issue.title}") in repository ${issue.repo_full_name}. Explore the repository, formulate an engineering plan, write the verified code fix, run tests, and create a Pull Request.`;
+    const promptText = `Fix ${issue.repo_full_name}#${issue.number} ("${issue.title}"). Explore the repository, formulate an engineering plan, write the verified code fix, run tests, and create a Pull Request.`;
     sendMessage(promptText);
   };
 
