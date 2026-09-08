@@ -11,6 +11,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { browserController } from '../lib/browserAgent/browserController';
 import { BrowserActionEvent } from '../lib/browserAgent/types';
 import { ScreencastFrame } from '../lib/browserAgent/screencast';
+import { runBrowserAgentTask } from '../lib/browserAgent/planningLoop';
 
 const PORT = Number(process.env.BROWSER_WS_PORT) || 8787;
 
@@ -19,7 +20,9 @@ type ClientMessage =
   | { type: 'subscribe'; sessionId: string }
   | { type: 'command'; sessionId: string; action: any }
   | { type: 'resolve_confirmation'; sessionId: string; requestId: string; approved: boolean }
-  | { type: 'stop_session'; sessionId: string };
+  | { type: 'stop_session'; sessionId: string }
+  | { type: 'run_task'; sessionId: string; task: string; maxSteps?: number }
+  | { type: 'stop_task'; sessionId: string };
 
 interface ClientState {
   ws: WebSocket;
@@ -31,6 +34,11 @@ const clients = new Set<ClientState>();
 // sessionId -> unsubscribe functions for activity/frame relays, so we start each
 // relay exactly once per session regardless of how many clients subscribe to it.
 const sessionRelaysStarted = new Set<string>();
+
+// sessionId -> cancellation flag for the one autonomous task (if any) running
+// against that session. Only one task at a time per session — the planning
+// loop and any manual action commands would otherwise fight over the same page.
+const runningTasks = new Map<string, { cancelled: boolean }>();
 
 function send(ws: WebSocket, payload: any): void {
   if (ws.readyState === WebSocket.OPEN) {
@@ -123,9 +131,54 @@ async function handleMessage(client: ClientState, raw: string): Promise<void> {
       }
 
       case 'stop_session': {
+        const runningTask = runningTasks.get(message.sessionId);
+        if (runningTask) runningTask.cancelled = true;
         await browserController.stopSession(message.sessionId);
         sessionRelaysStarted.delete(message.sessionId);
         broadcastToSubscribers(message.sessionId, { type: 'session_closed', sessionId: message.sessionId });
+        break;
+      }
+
+      case 'run_task': {
+        if (runningTasks.has(message.sessionId)) {
+          send(client.ws, {
+            type: 'error',
+            sessionId: message.sessionId,
+            message: 'A task is already running on this session. Stop it before starting another.',
+          });
+          break;
+        }
+
+        const taskState = { cancelled: false };
+        runningTasks.set(message.sessionId, taskState);
+
+        // Fire-and-forget: progress is observed entirely through the existing
+        // activity_event/frame relay (task_started/plan/task_completed/
+        // task_failed events), exactly like any other action on this session.
+        runBrowserAgentTask(message.sessionId, message.task, {
+          maxSteps: message.maxSteps,
+          isCancelled: () => taskState.cancelled,
+        })
+          .catch((err: any) => {
+            console.error(`[BrowserWSServer] Task crashed for session ${message.sessionId}:`, err?.message || err);
+            broadcastToSubscribers(message.sessionId, {
+              type: 'error',
+              sessionId: message.sessionId,
+              message: `Task crashed: ${err?.message || err}`,
+            });
+          })
+          .finally(() => {
+            runningTasks.delete(message.sessionId);
+          });
+
+        send(client.ws, { type: 'task_started_ack', sessionId: message.sessionId });
+        break;
+      }
+
+      case 'stop_task': {
+        const taskState = runningTasks.get(message.sessionId);
+        if (taskState) taskState.cancelled = true;
+        send(client.ws, { type: 'stop_task_ack', sessionId: message.sessionId, wasRunning: Boolean(taskState) });
         break;
       }
 

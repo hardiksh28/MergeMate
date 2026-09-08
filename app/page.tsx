@@ -11,12 +11,23 @@ import { GitHubIssueItem, PRResult } from '@/lib/github';
 import { KeyRotationStatus } from '@/lib/geminiRotator';
 import { Send, Sparkles, RefreshCw, GitPullRequest, Code2, Bot, Terminal } from 'lucide-react';
 
-const WELCOME_MESSAGE: ChatMessageData = {
-  id: 'welcome',
-  role: 'assistant',
-  content: '👋 **Hello! I am MergeMate**, your Autonomous GitHub Coding Agent.\n\nI can:\n1. **Target Specific Issues:** Paste any GitHub URL (e.g. `https://github.com/owner/repo/issues/123`) or shorthand `owner/repo#123` to immediately analyze, patch, verify, and submit a PR.\n2. **Explore & Discover:** Search open issues across React, TypeScript, Node.js, MongoDB, or specific organizations.\n3. **Autonomous Engineering Loop:** Explore the repository, formulate an engineering plan, run a bounded test/repair loop, and open verified cross-repository Pull Requests.',
-  timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-};
+const WELCOME_MESSAGE_CONTENT =
+  '👋 **Hello! I am MergeMate**, your Autonomous GitHub Coding Agent.\n\nI can:\n1. **Target Specific Issues:** Paste any GitHub URL (e.g. `https://github.com/owner/repo/issues/123`) or shorthand `owner/repo#123` to immediately analyze, patch, verify, and submit a PR.\n2. **Explore & Discover:** Search open issues across React, TypeScript, Node.js, MongoDB, or specific organizations.\n3. **Autonomous Engineering Loop:** Explore the repository, formulate an engineering plan, run a bounded test/repair loop, and open verified cross-repository Pull Requests.';
+
+// No real timestamp here — it's a static, non-time-based placeholder so the
+// server-rendered HTML and the client's first render match exactly. The
+// actual current time is filled in client-side after mount (see useEffect
+// below) and freshly on each "new chat", never computed at module load.
+function createWelcomeMessage(timestamp: string = ''): ChatMessageData {
+  return {
+    id: 'welcome',
+    role: 'assistant',
+    content: WELCOME_MESSAGE_CONTENT,
+    timestamp,
+  };
+}
+
+const WELCOME_MESSAGE: ChatMessageData = createWelcomeMessage();
 
 export default function Home() {
   const [messages, setMessages] = useState<ChatMessageData[]>([WELCOME_MESSAGE]);
@@ -50,6 +61,16 @@ export default function Home() {
       .catch(() => {});
   }, []);
 
+  // Fill in the welcome message's real timestamp after mount — computing it
+  // at module load would run once on the server and again on the client,
+  // producing different wall-clock times and a hydration mismatch.
+  useEffect(() => {
+    const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    setMessages((prev) =>
+      prev.map((m) => (m.id === 'welcome' ? { ...m, timestamp: now } : m))
+    );
+  }, []);
+
   // Auto-scroll to bottom of chat
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -68,7 +89,7 @@ export default function Home() {
 
   // Handle starting a new chat session
   const handleNewChat = () => {
-    setMessages([WELCOME_MESSAGE]);
+    setMessages([createWelcomeMessage(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))]);
     setInput('');
   };
 

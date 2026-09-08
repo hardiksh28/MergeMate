@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>MergeMate Browser Agent Test Fixture</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 480px; margin: 40px auto; color: #111; }
+  label { display: block; margin-top: 16px; font-weight: 600; }
+  input[type="text"], select { display: block; margin-top: 4px; padding: 6px; width: 100%; box-sizing: border-box; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; margin-top: 16px; font-weight: 600; }
+  .checkbox-row input { margin: 0; }
+  button { margin-top: 20px; padding: 8px 16px; cursor: pointer; }
+  #status { margin-top: 20px; font-weight: bold; min-height: 1.2em; }
+</style>
+</head>
+<body>
+  <h1>Contact Form</h1>
+  <p>This is a deterministic, self-contained fixture page used to test MergeMate's Browser Agent planning loop end to end. It has no external dependencies and no network calls.</p>
+
+  <form id="contact-form">
+    <label for="full-name">Full Name</label>
+    <input type="text" id="full-name" name="fullName" placeholder="Enter your full name" />
+
+    <label for="country">Country</label>
+    <select id="country" name="country">
+      <option value="">Select a country</option>
+      <option value="us">United States</option>
+      <option value="ca">Canada</option>
+      <option value="uk">United Kingdom</option>
+    </select>
+
+    <label class="checkbox-row">
+      <input type="checkbox" id="subscribe" name="subscribe" />
+      Subscribe to newsletter
+    </label>
+
+    <button type="submit" id="submit-button">Submit</button>
+  </form>
+
+  <div id="status" role="status" aria-live="polite"></div>
+
+  <script>
+    document.getElementById('contact-form').addEventListener('submit', function (e) {
+      e.preventDefault();
+      var name = document.getElementById('full-name').value.trim();
+      var country = document.getElementById('country').value;
+      var countryLabel = document.getElementById('country').selectedOptions[0].text;
+      var subscribed = document.getElementById('subscribe').checked;
+      var status = document.getElementById('status');
+
+      if (!name || !country) {
+        status.textContent = 'Please fill in all required fields before submitting.';
+        status.style.color = '#b91c1c';
+        return;
+      }
+
+      status.textContent =
+        'Form submitted successfully! Name: ' + name + ', Country: ' + countryLabel + ', Subscribed: ' + subscribed + '.';
+      status.style.color = '#15803d';
+    });
+  </script>
+</body>
+</html>

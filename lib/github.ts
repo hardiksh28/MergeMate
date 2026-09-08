@@ -841,31 +841,40 @@ export async function searchIssues(options: SearchIssueOptions): Promise<GitHubI
     queryString += ` org:${options.company}`;
   }
 
+  // GitHub Search silently returns ZERO results (not an error) once a query
+  // exceeds its cap of ~5 combined AND/OR/NOT operators — every clause below
+  // is kept to at most one OR (2 alternatives) so the worst case (difficulty
+  // + issueType + tech, all active at once) stays safely under that limit.
   if (options.difficulty === 'beginner') {
-    queryString += ` (label:"good first issue" OR label:"help wanted" OR label:"good-first-issue")`;
+    queryString += ` (label:"good first issue" OR label:"help wanted")`;
   } else if (options.difficulty === 'intermediate') {
-    queryString += ` (label:"help wanted" OR label:"enhancement" OR label:"bug")`;
+    queryString += ` (label:"help wanted" OR label:"bug")`;
   } else if (options.difficulty === 'advanced') {
-    queryString += ` (label:"complex" OR label:"architecture" OR label:"refactor" OR label:"performance")`;
+    queryString += ` (label:"complex" OR label:"architecture")`;
   }
 
   if (options.issueType === 'bug') {
     queryString += ` label:bug`;
   } else if (options.issueType === 'documentation') {
-    queryString += ` (label:documentation OR label:docs)`;
+    queryString += ` label:documentation`;
   } else if (options.issueType === 'test') {
-    queryString += ` (label:test OR label:testing)`;
+    queryString += ` label:test`;
   } else if (options.issueType === 'feature') {
-    queryString += ` (label:enhancement OR label:feature)`;
+    queryString += ` label:enhancement`;
   }
 
   if (options.query) {
     queryString += ` ${options.query}`;
   } else {
-    const techKeywords = options.techStack && options.techStack.length > 0 
-      ? options.techStack.join(' ') 
-      : 'React TypeScript Node MongoDB';
-    queryString += ` ${techKeywords}`;
+    // GitHub's search ANDs space-separated bare terms, so joining tech names
+    // with plain spaces required an issue to mention ALL of them at once —
+    // almost never true — which silently starved every search down to zero
+    // results. OR-group them instead: match issues touching ANY one of them.
+    // Capped to 2 terms (1 OR) to stay under the operator limit above.
+    const stack = options.techStack && options.techStack.length > 0
+      ? options.techStack
+      : ['React', 'TypeScript'];
+    queryString += ` (${stack.slice(0, 2).map((t) => `"${t}"`).join(' OR ')})`;
   }
 
   queryString += ` stars:>30`;
@@ -881,12 +890,20 @@ export async function searchIssues(options: SearchIssueOptions): Promise<GitHubI
     const rawItems = searchRes.data.items || [];
     const validatedCandidates: GitHubIssueItem[] = [];
 
-    for (const item of rawItems) {
+    for (let i = 0; i < rawItems.length; i++) {
+      const item = rawItems[i];
       const repoParts = item.repository_url.split('/');
       const repo = repoParts.pop() || '';
       const owner = repoParts.pop() || '';
 
       if (!owner || !repo || !item.number) continue;
+
+      // Each candidate triggers 2-3 follow-up API calls (issue/repo lookups,
+      // an active-PR search). Firing all of them back-to-back for up to ~30
+      // raw candidates reliably trips GitHub's secondary abuse rate limiter
+      // (a separate, much stricter limiter than the documented per-hour
+      // quota) — a brief pause between candidates keeps this well clear of it.
+      if (i > 0) await new Promise((resolve) => setTimeout(resolve, 400));
 
       const validation = await validateIssueCandidate(owner, repo, item.number, {
         octokitInstance: octokit,

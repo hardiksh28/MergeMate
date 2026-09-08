@@ -10,6 +10,7 @@
 import * as ts from 'typescript';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { executeWithRotation } from './geminiRotator';
+import { generateWithGroq, isGroqConfigured } from './groqClient';
 import {
   isCommandSafe,
   executeSafeCommand,
@@ -37,6 +38,84 @@ import {
   validateMultiFileDiffSet,
   createPR,
 } from './github';
+
+// Google periodically sunsets pinned model versions outright (gemini-1.5-flash
+// has 404'd during 2026). Lead with the "-latest" aliases Google maintains
+// specifically to never break, then fall back to concrete versions, rather
+// than hardcoding a single pinned model name for patch generation.
+const PATCH_MODEL_CANDIDATES = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-flash-lite-latest', 'gemini-2.5-flash-lite'];
+
+async function generateContentWithModelFallback(genAI: GoogleGenerativeAI, prompt: string): Promise<string> {
+  let lastError: any = null;
+  for (const modelName of PATCH_MODEL_CANDIDATES) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const res = await model.generateContent(prompt);
+      return res.response.text();
+    } catch (err: any) {
+      lastError = err;
+      const message = String(err?.message || err);
+      // Move to the next candidate for "model unavailable"/overloaded/quota
+      // errors; anything else (auth, bad request) won't be fixed by
+      // switching models, so surface it immediately.
+      if (!/404|not found|not supported|503|overloaded|unavailable|high demand|429|quota exceeded|resource_exhausted|too many requests/i.test(message)) throw err;
+    }
+  }
+  throw lastError || new Error('All patch-generation model candidates are unavailable.');
+}
+
+function parseMultiFilePatchJSON(rawText: string): MultiFilePatchSet | null {
+  let text = rawText.trim();
+  text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && Array.isArray(parsed.changes) && parsed.changes.length > 0) {
+      return parsed as MultiFilePatchSet;
+    }
+  } catch {
+    // fall through
+  }
+  return null;
+}
+
+/**
+ * Generates a patch-set JSON response from an LLM given a prompt, trying
+ * every configured Gemini key/model first, then Groq as a last resort when
+ * Gemini is entirely unavailable (e.g. free-tier daily quota exhausted
+ * across every key). Returns null — never throws — so callers can fall back
+ * to the deterministic synthesis path when no LLM is reachable at all.
+ */
+async function generatePatchSetJSON(prompt: string, userKeys?: string[]): Promise<MultiFilePatchSet | null> {
+  try {
+    const geminiResult = await executeWithRotation(async (apiKey) => {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      const text = await generateContentWithModelFallback(genAI, prompt);
+      const parsed = parseMultiFilePatchJSON(text);
+      if (!parsed) throw new Error('Invalid JSON schema returned');
+      return parsed;
+    }, userKeys);
+
+    if (geminiResult) return geminiResult;
+  } catch (err: any) {
+    console.warn(`[Agent Orchestrator] Gemini patch generation unavailable: ${err?.message}`);
+  }
+
+  if (isGroqConfigured()) {
+    try {
+      const text = await generateWithGroq(prompt);
+      const parsed = parseMultiFilePatchJSON(text);
+      if (parsed) {
+        console.log('[Agent Orchestrator] Generated patch via Groq fallback (Gemini unavailable).');
+        return parsed;
+      }
+      console.warn('[Agent Orchestrator] Groq fallback returned unparseable JSON.');
+    } catch (err: any) {
+      console.warn(`[Agent Orchestrator] Groq fallback also failed: ${err?.message}`);
+    }
+  }
+
+  return null;
+}
 
 export type AgentState =
   | 'IDLE'
@@ -776,30 +855,14 @@ Instructions:
 3. Preserve existing exports, formatting, and unrelated logic across all files.
 4. Do NOT wrap output in markdown commentary outside the JSON block.`;
 
-  try {
-    const geminiResult = await executeWithRotation(async (apiKey) => {
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const res = await model.generateContent(prompt);
-      let text = res.response.text().trim();
-      text = text.replace(/^```(?:json)?\n/, '').replace(/\n```$/, '');
-      const parsed = JSON.parse(text);
-      if (parsed && Array.isArray(parsed.changes) && parsed.changes.length > 0) {
-        return parsed as MultiFilePatchSet;
-      }
-      throw new Error('Invalid JSON schema returned');
-    }, userKeys);
-
-    if (geminiResult && geminiResult.changes.length > 0) {
-      // Attach previousContent from contexts for diff calculation
-      geminiResult.changes.forEach(c => {
-        const ctx = contexts.find(x => x.path === c.filePath);
-        c.previousContent = ctx?.content;
-      });
-      return geminiResult;
-    }
-  } catch (err: any) {
-    console.warn(`[Agent Orchestrator] Gemini multi-file patch fallback: ${err?.message}`);
+  const llmResult = await generatePatchSetJSON(prompt, userKeys);
+  if (llmResult && llmResult.changes.length > 0) {
+    // Attach previousContent from contexts for diff calculation
+    llmResult.changes.forEach(c => {
+      const ctx = contexts.find(x => x.path === c.filePath);
+      c.previousContent = ctx?.content;
+    });
+    return llmResult;
   }
 
   // Deterministic multi-file fallback synthesis
@@ -861,28 +924,14 @@ Please fix the cross-file syntax, type, and test errors and return the complete,
   "summary": "Repaired multi-file patch"
 }`;
 
-  try {
-    const repaired = await executeWithRotation(async (apiKey) => {
-      const genAI = new GoogleGenerativeAI(apiKey);
-      const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      const res = await model.generateContent(prompt);
-      let text = res.response.text().trim();
-      text = text.replace(/^```(?:json)?\n/, '').replace(/\n```$/, '');
-      const parsed = JSON.parse(text);
-      if (parsed && Array.isArray(parsed.changes) && parsed.changes.length > 0) {
-        return parsed as MultiFilePatchSet;
-      }
-      throw new Error('Invalid JSON repair schema');
-    }, userKeys);
-
-    if (repaired && repaired.changes.length > 0) {
-      repaired.changes.forEach(c => {
-        const ctx = contexts.find(x => x.path === c.filePath);
-        c.previousContent = ctx?.content;
-      });
-      return repaired;
-    }
-  } catch {}
+  const repaired = await generatePatchSetJSON(prompt, userKeys);
+  if (repaired && repaired.changes.length > 0) {
+    repaired.changes.forEach(c => {
+      const ctx = contexts.find(x => x.path === c.filePath);
+      c.previousContent = ctx?.content;
+    });
+    return repaired;
+  }
 
   // Deterministic syntax cleanup across all files
   previousPatchSet.changes.forEach(c => {
@@ -992,8 +1041,15 @@ export async function runAutonomousAgentWorkflow(
   } else {
     pushStep('SEARCHING_GITHUB', 'Searching GitHub Repositories', 'Executing deterministic multi-qualifier query...');
     
+    // Note: userInput is a freeform natural-language sentence (e.g. "Find a
+    // good beginner-friendly issue...") — it must NOT be passed as `query`,
+    // which searchIssues treats as a literal GitHub full-text search term.
+    // Doing so used to produce a near-empty/nonsensical search that silently
+    // fell back to searchIssues' hardcoded placeholder issue list. Only the
+    // keyword-derived flags below (difficulty/issueType) should come from it;
+    // leaving `query` unset lets searchIssues build its default, working
+    // tech-stack-based query instead.
     const searchOptions: any = {
-      query: userInput,
       techStack: targetTechStack || ['React', 'TypeScript', 'Node.js', 'MongoDB'],
       limit: 6,
       userToken,

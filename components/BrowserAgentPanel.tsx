@@ -15,6 +15,8 @@ import {
   Monitor,
   Send,
   Globe,
+  Sparkles,
+  StopCircle,
 } from 'lucide-react';
 import { BrowserActionEvent, BrowserActionType } from '@/lib/browserAgent/types';
 
@@ -33,6 +35,7 @@ const ACTION_TYPES: BrowserActionType[] = ['click', 'type', 'select', 'scroll', 
 
 function eventStatusIcon(event: BrowserActionEvent) {
   if (event.type === 'confirmation_required') return <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" />;
+  if (event.type === 'plan') return <Sparkles className="w-3.5 h-3.5 text-violet-400 shrink-0" />;
   if (event.status === 'completed') return <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />;
   if (event.status === 'failed') return <AlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />;
   if (event.status === 'in_progress') return <ArrowRight className="w-3.5 h-3.5 text-cyan-400 shrink-0" />;
@@ -58,6 +61,9 @@ export const BrowserAgentPanel: React.FC = () => {
   const [targetInput, setTargetInput] = useState('');
   const [textInput, setTextInput] = useState('');
   const [directionInput, setDirectionInput] = useState<'up' | 'down' | 'left' | 'right'>('down');
+  const [taskInput, setTaskInput] = useState('');
+  const [isTaskRunning, setIsTaskRunning] = useState(false);
+  const [activeTask, setActiveTask] = useState('');
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -131,6 +137,12 @@ export const BrowserAgentPanel: React.FC = () => {
           case 'activity_event':
             if (msg.sessionId === sessionIdRef.current) {
               setEvents((prev) => [...prev, msg.event]);
+              const eventType = msg.event?.type;
+              if (eventType === 'task_started') setIsTaskRunning(true);
+              if (eventType === 'task_completed' || eventType === 'task_failed') {
+                setIsTaskRunning(false);
+                setActiveTask('');
+              }
             }
             break;
           case 'frame':
@@ -156,6 +168,8 @@ export const BrowserAgentPanel: React.FC = () => {
               setSessionId(null);
               setHasFrame(false);
               setPendingConfirmation(null);
+              setIsTaskRunning(false);
+              setActiveTask('');
             }
             break;
           case 'error':
@@ -236,6 +250,21 @@ export const BrowserAgentPanel: React.FC = () => {
     sendMessage({ type: 'command', sessionId, action });
   };
 
+  const handleRunTask = () => {
+    if (!sessionId || !taskInput.trim() || isTaskRunning) return;
+    setIsTaskRunning(true);
+    setActiveTask(taskInput.trim());
+    sendMessage({ type: 'run_task', sessionId, task: taskInput.trim() });
+    // Clear right away so leftover text can't get spliced into the next task
+    // if the user starts typing again before noticing this one is done.
+    setTaskInput('');
+  };
+
+  const handleStopTask = () => {
+    if (!sessionId) return;
+    sendMessage({ type: 'stop_task', sessionId });
+  };
+
   const handleConfirmationResponse = (approved: boolean) => {
     if (!pendingConfirmation || !sessionId) return;
     sendMessage({ type: 'resolve_confirmation', sessionId, requestId: pendingConfirmation.id, approved });
@@ -298,7 +327,8 @@ export const BrowserAgentPanel: React.FC = () => {
               />
               <button
                 onClick={handleNavigate}
-                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium transition-colors shrink-0"
+                disabled={isTaskRunning}
+                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-slate-200 text-xs font-medium transition-colors shrink-0"
               >
                 Go
               </button>
@@ -307,12 +337,46 @@ export const BrowserAgentPanel: React.FC = () => {
         )}
       </div>
 
+      {/* AI Planning Loop: natural-language task bar */}
+      {sessionId && (
+        <div className="glass-panel border-b border-slate-800/60 px-4 py-2.5 flex flex-wrap items-center gap-2">
+          <Sparkles className="w-4 h-4 text-violet-400 shrink-0" />
+          <input
+            value={isTaskRunning ? activeTask : taskInput}
+            onChange={(e) => setTaskInput(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleRunTask()}
+            disabled={isTaskRunning}
+            placeholder='Describe a goal, e.g. "Fill in the form and submit it"'
+            className="flex-1 min-w-[220px] bg-slate-900/80 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 placeholder-slate-600 focus:outline-none focus:border-violet-500/60 disabled:opacity-60"
+          />
+          {isTaskRunning ? (
+            <button
+              onClick={handleStopTask}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 border border-rose-500/30 text-rose-300 text-xs font-semibold transition-all shrink-0"
+            >
+              <StopCircle className="w-3.5 h-3.5 animate-pulse" />
+              Stop Task
+            </button>
+          ) : (
+            <button
+              onClick={handleRunTask}
+              disabled={!taskInput.trim()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gradient-to-r from-violet-600 to-indigo-500 hover:from-violet-500 hover:to-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold shadow-md shadow-violet-600/20 transition-all shrink-0"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Run Task
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Manual Structured Action Bar */}
       {sessionId && (
-        <div className="glass-panel border-b border-slate-800/60 px-4 py-2.5 flex flex-wrap items-center gap-2 text-xs">
+        <div className={`glass-panel border-b border-slate-800/60 px-4 py-2.5 flex flex-wrap items-center gap-2 text-xs ${isTaskRunning ? 'opacity-40 pointer-events-none' : ''}`}>
           <select
             value={actionType}
             onChange={(e) => setActionType(e.target.value as BrowserActionType)}
+            disabled={isTaskRunning}
             className="bg-slate-900/80 border border-slate-800 rounded-lg px-2 py-1.5 text-slate-200 focus:outline-none focus:border-indigo-500/60"
           >
             {ACTION_TYPES.map((type) => (
@@ -355,7 +419,8 @@ export const BrowserAgentPanel: React.FC = () => {
 
           <button
             onClick={handleRunAction}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 font-semibold transition-all"
+            disabled={isTaskRunning}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Send className="w-3.5 h-3.5" />
             Run Action

@@ -100,7 +100,11 @@ export type BrowserActionEventType =
   | 'action_failed'
   | 'session_stopped'
   | 'session_crashed'
-  | 'error';
+  | 'error'
+  | 'task_started'
+  | 'plan'
+  | 'task_completed'
+  | 'task_failed';
 
 export type BrowserActionEventStatus =
   | 'pending'
@@ -140,3 +144,63 @@ export const MAX_ACTION_FIND_ATTEMPTS = 3;
 export const DEFAULT_ACTION_TIMEOUT_MS = 10000;
 export const DEFAULT_NAVIGATION_TIMEOUT_MS = 30000;
 export const MAX_WAIT_MS = 15000;
+
+/**
+ * Generic AI Planning Loop — vocabulary
+ * Deliberately GitHub-agnostic: this loop drives a browser toward any
+ * natural-language goal via observe -> decide -> act -> repeat. It is a
+ * separate concern from the Coding Agent's GitHub API pipeline.
+ */
+export type PlannerActionType = Exclude<BrowserActionType, 'inspect'>;
+
+export interface PlannerAction {
+  action: PlannerActionType;
+  target?: string;
+  text?: string;
+  value?: string;
+  url?: string;
+  direction?: 'up' | 'down' | 'left' | 'right';
+  amount?: number;
+  timeoutMs?: number;
+}
+
+/**
+ * The single JSON object the planner LLM must return each turn.
+ * "done" alone is not "succeeded" — the planner can conclude the task is
+ * genuinely impossible on this page (e.g. a required element doesn't exist)
+ * and report that as done=true, success=false, mirroring the Coding Agent's
+ * own SOLVABLE vs NOT SOLVABLE distinction (see evaluateFinalPRDecision).
+ */
+export interface PlannerDecision {
+  done: boolean;
+  success?: boolean; // meaningful only when done === true; defaults to true for backward compatibility
+  action?: PlannerAction; // required when done === false
+  reasoning?: string;
+  summary?: string; // required when done === true
+}
+
+export interface BrowserAgentTaskStepRecord {
+  step: number;
+  reasoning?: string;
+  action?: StructuredAction;
+  success?: boolean;
+  message?: string;
+}
+
+export interface BrowserAgentTaskOptions {
+  maxSteps?: number;
+  userKeys?: string[];
+  isCancelled?: () => boolean;
+}
+
+export interface BrowserAgentTaskResult {
+  success: boolean;
+  task: string;
+  steps: BrowserAgentTaskStepRecord[];
+  summary: string;
+}
+
+export const DEFAULT_TASK_MAX_STEPS = 12;
+export const HARD_CAP_TASK_STEPS = 20;
+export const MAX_CONSECUTIVE_ACTION_FAILURES = 3;
+export const MAX_PLANNER_PARSE_RETRIES = 1;

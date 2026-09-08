@@ -182,7 +182,10 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const candidateModels = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp', 'gemini-1.0-pro'];
+      // Google periodically sunsets pinned model versions outright (all four
+      // of the previous candidates here have 404'd). Lead with the "-latest"
+      // aliases Google maintains specifically to never break.
+      const candidateModels = ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-pro-latest', 'gemini-2.5-flash-lite'];
       let response: any = null;
       let activeChat: any = null;
       let lastModelError: any = null;
