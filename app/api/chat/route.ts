@@ -22,7 +22,7 @@ Capabilities & Guidelines:
 1. USER INTENTS:
    - Specific Issue Target: If the user provides a GitHub issue URL (e.g. 'https://github.com/vercel/next.js/issues/123') or 'owner/repo#123', call 'get_specific_issue'.
    - Search Request: If the user asks for issues by language (TypeScript, React, Node, MongoDB), difficulty, topic, or organization, call 'search_issues'.
-   - Autonomous Workflow: You can run the entire engineering workflow directly using 'execute_autonomous_task'.
+   - Autonomous Workflow: You can run the entire engineering workflow directly using 'execute_autonomous_task'. If the user names a specific company/organization (e.g. "cal.com", "vercel", "supabase"), pass its actual GitHub org handle as the 'company' parameter (e.g. cal.com's GitHub org is "calcom", not "cal.com") so discovery is restricted to that org instead of a generic tech-stack search.
 2. REPOSITORY UNDERSTANDING:
    - Before modifying code, inspect repository architecture via 'get_repository_structure'.
    - Retrieve relevant source files via 'get_file_content' or search symbols via 'search_repository_code'.
@@ -113,6 +113,7 @@ const geminiTools = [
           properties: {
             instruction: { type: 'STRING', description: 'Natural language task or issue URL' },
             executionMode: { type: 'STRING', enum: ['analyze', 'fix', 'pr', 'autonomous'], description: 'Target mode' },
+            company: { type: 'STRING', description: 'GitHub organization/company to restrict issue discovery to, if the user named one (e.g. "calcom" for cal.com, "vercel", "facebook"). Use the org\'s actual GitHub handle, not a display name.' },
           },
           required: ['instruction'],
         },
@@ -285,6 +286,7 @@ export async function POST(req: NextRequest) {
               userInput: args.instruction || latestUserMessage,
               userToken,
               executionMode: args.executionMode || 'autonomous',
+              targetOrg: args.company || undefined,
             });
             toolOutput = agentResult;
             toolExecutions.push({

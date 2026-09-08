@@ -33,6 +33,7 @@ import {
   searchIssues,
   getRepoStructure,
   getFileContent,
+  searchCodeInRepo,
   scanDiffForSecurityRisks,
   validateFinalDiff,
   validateMultiFileDiffSet,
@@ -256,6 +257,8 @@ export interface AgentWorkflowOptions {
   userToken?: string;
   userKeys?: string[];
   targetTechStack?: string[];
+  /** Restrict issue discovery to a specific GitHub org/company (e.g. "calcom", "vercel"). */
+  targetOrg?: string;
   executionMode?: 'analyze' | 'fix' | 'pr' | 'autonomous';
   workingDirectory?: string;
   mockCommandExecutor?: (command: string, cwd?: string) => Promise<CommandExecutionResult>;
@@ -284,8 +287,19 @@ export function verifyCodeSyntaxAndTypes(
     return { isValid: errors.length === 0, errors };
   }
 
-  // Markdown, CSS, YAML, text files
-  if (filePath.endsWith('.md') || filePath.endsWith('.txt') || filePath.endsWith('.css') || filePath.endsWith('.yml') || filePath.endsWith('.yaml')) {
+  // Markdown, CSS, YAML, text, SQL, and other non-TS/JS files — none of
+  // these are valid TypeScript, so running them through the TS AST parser
+  // below produces a flood of meaningless "syntax errors" rather than any
+  // real signal.
+  if (
+    filePath.endsWith('.md') ||
+    filePath.endsWith('.txt') ||
+    filePath.endsWith('.css') ||
+    filePath.endsWith('.yml') ||
+    filePath.endsWith('.yaml') ||
+    filePath.endsWith('.sql') ||
+    filePath.endsWith('.prisma')
+  ) {
     return { isValid: true, errors: [] };
   }
 
@@ -707,6 +721,32 @@ export function findTargetedTestFile(sourceFile: string, fileTree: string[]): st
   return res.length > 0 ? res[0] : undefined;
 }
 
+const KEYWORD_STOPWORDS = new Set([
+  'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can', 'has', 'have', 'had',
+  'when', 'both', 'exist', 'exists', 'always', 'never', 'this', 'that', 'with', 'from',
+  'into', 'onto', 'each', 'even', 'also', 'only', 'once', 'while', 'still', 'shows',
+  'show', 'shown', 'view', 'views', 'confirm', 'confirming', 'entry', 'entries',
+]);
+
+/**
+ * Extracts a small number of distinctive keywords from an issue's title,
+ * suitable for GitHub code search — favors longer, less-common words and
+ * skips generic English filler that would just make the search too broad.
+ */
+export function extractSearchKeywords(title: string, maxKeywords: number = 2): string[] {
+  const words = title
+    .split(/[^a-zA-Z0-9]+/)
+    .filter((w) => w.length > 3 && !KEYWORD_STOPWORDS.has(w.toLowerCase()));
+
+  // Prefer words that look like proper nouns/identifiers (contain an
+  // uppercase letter after the first position, e.g. "WhatsApp") — these tend
+  // to be the most specific, highest-signal search terms.
+  const distinctive = words.filter((w) => /[A-Z]/.test(w.slice(1)));
+  const ranked = [...new Set([...distinctive, ...words])];
+
+  return ranked.slice(0, maxKeywords);
+}
+
 /**
  * Dependency-Aware Multi-File Context Explorer
  * Progressively expands context starting from primary candidate to imported types, utilities, and tests.
@@ -722,12 +762,62 @@ export async function discoverRelatedFiles(
   const fileTree = repoStructure.fileTree;
   const issueText = `${issue.title} ${issue.body}`.toLowerCase();
 
-  // 1. Identify primary implementation candidates
-  const primaryCandidates = fileTree.filter(f => {
+  // 1. Identify primary implementation candidates by filename. This is fast
+  // and works well for small-to-medium repos, but getRepoStructure's file
+  // tree is capped to the first 50 entries — in a large monorepo those are
+  // almost always root-level config/tooling files, so this filename match
+  // can come up empty even though the real implementation file is right
+  // there in the repo, just never in the truncated candidate pool.
+  let primaryCandidates = fileTree.filter(f => {
     if (f.includes('node_modules') || f.includes('.git')) return false;
     const base = f.toLowerCase().split('/').pop()?.replace(/\.[^/.]+$/, '') || '';
-    return base.length > 2 && issueText.includes(base);
+    if (base.length <= 3) return false;
+    // A raw substring check lets a short, generic basename like "config"
+    // false-positive-match inside an unrelated word like "configuration" in
+    // the issue body — require a real word boundary instead.
+    const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`\\b${escaped}\\b`).test(issueText);
   });
+
+  // 1b. When filename matching finds nothing, fall back to GitHub code
+  // search — it searches the repo's actual indexed *content*, not a
+  // truncated tree, so it finds files a monorepo's filename heuristic never
+  // could (e.g. a bug about "WhatsApp"/"Signal" living deep in
+  // apps/web/components/..., far outside the first 50 tree entries).
+  if (primaryCandidates.length === 0) {
+    const keywords = extractSearchKeywords(issue.title, 4);
+    const codeSearchHits = new Set<string>();
+    for (const keyword of keywords) {
+      const codeMatches = await searchCodeInRepo(owner, repo, keyword, userToken);
+      codeMatches.forEach((m) => codeSearchHits.add(m.path));
+    }
+
+    const isNoiseFile = (p: string) => {
+      const lower = p.toLowerCase();
+      return (
+        lower.includes('node_modules') ||
+        lower.includes('.git') ||
+        lower.includes('.test.') ||
+        lower.includes('.spec.') ||
+        lower.endsWith('.md') ||
+        lower.endsWith('.json') ||
+        lower.includes('.generated.') ||
+        // Historical/generated artifacts — never valid "fix" targets even
+        // when they happen to match a search keyword (e.g. a migration
+        // file's enum values will literally contain "whatsapp").
+        lower.includes('/migrations/') ||
+        lower.includes('/dist/') ||
+        lower.includes('/build/') ||
+        lower.includes('/.next/')
+      );
+    };
+
+    // Real source files first (the ones actually worth patching), metadata/
+    // generated files only as a last resort if nothing else came back.
+    const sourceHits = [...codeSearchHits].filter((p) => !isNoiseFile(p));
+    const otherHits = [...codeSearchHits].filter(isNoiseFile);
+    primaryCandidates.push(...sourceHits, ...otherHits);
+  }
 
   if (primaryCandidates.length === 0) {
     if (fileTree.includes('src/index.ts')) primaryCandidates.push('src/index.ts');
@@ -952,6 +1042,7 @@ export async function runAutonomousAgentWorkflow(
     userToken,
     userKeys,
     targetTechStack,
+    targetOrg,
     executionMode = 'autonomous',
     workingDirectory,
     mockCommandExecutor,
@@ -1054,6 +1145,7 @@ export async function runAutonomousAgentWorkflow(
       limit: 6,
       userToken,
     };
+    if (targetOrg) searchOptions.company = targetOrg;
 
     const lower = userInput.toLowerCase();
     if (lower.includes('beginner') || lower.includes('easy') || lower.includes('starter')) searchOptions.difficulty = 'beginner';
@@ -1061,6 +1153,18 @@ export async function runAutonomousAgentWorkflow(
     if (lower.includes('bug') || lower.includes('error') || lower.includes('crash')) searchOptions.issueType = 'bug';
     if (lower.includes('doc') || lower.includes('readme') || lower.includes('guide')) searchOptions.issueType = 'documentation';
     if (lower.includes('test') || lower.includes('spec') || lower.includes('coverage')) searchOptions.issueType = 'test';
+
+    // Surface GitHub's own exact rate-limit timing to the user instead of a
+    // vague "please wait" — this step's description carries the precise
+    // resume time so the UI can show it, not a guess.
+    searchOptions.onRateLimitWait = (event: { reason: string; waitSeconds: number; resumesAt: string }) => {
+      pushStep(
+        'SEARCHING_GITHUB',
+        'GitHub Rate Limit — Waiting',
+        `${event.reason} hit GitHub's rate limit. Resuming automatically in ${event.waitSeconds}s (at ${new Date(event.resumesAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}).`,
+        'in_progress'
+      );
+    };
 
     const candidates = await searchIssues(searchOptions);
     if (candidates.length === 0) {

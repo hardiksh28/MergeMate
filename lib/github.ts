@@ -9,6 +9,8 @@ export interface SearchIssueOptions {
   difficulty?: 'beginner' | 'intermediate' | 'advanced' | 'all';
   limit?: number;
   userToken?: string;
+  /** Called with the exact, GitHub-reported wait time whenever a rate limit is hit mid-search. */
+  onRateLimitWait?: (event: RateLimitWaitEvent) => void;
 }
 
 export interface IssueScoreBreakdown {
@@ -138,6 +140,80 @@ export interface PRResult {
   message: string;
   simulated?: boolean;
   diffPreview?: string;
+}
+
+/**
+ * Reports an exact, precisely-timed rate-limit wait rather than a vague
+ * "please wait a moment" — surfaced to the caller (and, through it, to the
+ * user) so MergeMate never has to guess how long a cooldown will take.
+ */
+export interface RateLimitWaitEvent {
+  reason: string;
+  waitSeconds: number;
+  resumesAt: string; // ISO timestamp
+}
+
+/**
+ * Extracts the exact wait time GitHub itself reports for a rate-limited
+ * request: the `Retry-After` header on secondary (abuse-detection) limits,
+ * or the gap to `X-RateLimit-Reset` for the documented primary limits.
+ * Returns null if the error isn't a rate-limit response at all.
+ */
+export function extractRateLimitWaitSeconds(error: any): number | null {
+  const status = error?.status || error?.statusCode || error?.response?.status;
+  const message = String(error?.message || '').toLowerCase();
+  const isRateLimit =
+    status === 403 &&
+    (message.includes('rate limit') || message.includes('secondary rate limit') || message.includes('abuse'));
+  const isForbiddenOrTooMany = status === 429 || isRateLimit;
+  if (!isForbiddenOrTooMany) return null;
+
+  const headers = error?.response?.headers || {};
+  const retryAfter = headers['retry-after'] ?? headers['Retry-After'];
+  if (retryAfter !== undefined) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds;
+  }
+
+  const resetHeader = headers['x-ratelimit-reset'] ?? headers['X-RateLimit-Reset'];
+  if (resetHeader !== undefined) {
+    const resetEpochSeconds = Number(resetHeader);
+    if (Number.isFinite(resetEpochSeconds)) {
+      const secondsUntilReset = resetEpochSeconds - Math.floor(Date.now() / 1000);
+      if (secondsUntilReset > 0) return secondsUntilReset;
+    }
+  }
+
+  // GitHub confirmed a rate limit but gave no machine-readable timing —
+  // fall back to a conservative default rather than leaving it unbounded.
+  return 30;
+}
+
+/**
+ * Waits out a rate limit using GitHub's own reported timing (capped so a
+ * single request can never hang indefinitely), reporting the exact duration
+ * via `onWait` so it can be surfaced to the user instead of a vague message.
+ */
+export async function waitForGitHubRateLimit(
+  error: any,
+  reason: string,
+  onWait?: (event: RateLimitWaitEvent) => void
+): Promise<boolean> {
+  const waitSeconds = extractRateLimitWaitSeconds(error);
+  if (waitSeconds === null) return false;
+
+  const boundedSeconds = Math.min(waitSeconds, 90);
+  const resumesAt = new Date(Date.now() + boundedSeconds * 1000).toISOString();
+
+  const event: RateLimitWaitEvent = { reason, waitSeconds: boundedSeconds, resumesAt };
+  if (onWait) {
+    onWait(event);
+  } else {
+    console.warn(`[GitHub RateLimit] ${reason}: waiting exactly ${boundedSeconds}s (resumes at ${resumesAt}).`);
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, boundedSeconds * 1000));
+  return true;
 }
 
 /**
@@ -634,7 +710,12 @@ export async function validateIssueCandidate(
   owner: string,
   repo: string,
   issueNumber: number,
-  options?: { userToken?: string; octokitInstance?: Octokit; targetTechStack?: string[] }
+  options?: {
+    userToken?: string;
+    octokitInstance?: Octokit;
+    targetTechStack?: string[];
+    onRateLimitWait?: (event: RateLimitWaitEvent) => void;
+  }
 ): Promise<IssueValidationResult> {
   const octokit = options?.octokitInstance || getOctokit(options?.userToken);
 
@@ -703,37 +784,51 @@ export async function validateIssueCandidate(
       console.warn(`[GitHub Validation] Could not fetch repository status for ${owner}/${repo}:`, repoErr?.message);
     }
 
-    // 3. Detect existing active Pull Requests
-    try {
-      const prSearchQuery = `type:pr is:open repo:${owner}/${repo} ${issueNumber}`;
-      const prSearchResults = await octokit.rest.search.issuesAndPullRequests({
-        q: prSearchQuery,
-        per_page: 5,
-      });
+    // 3. Detect existing active Pull Requests (one precisely-timed retry if
+    // GitHub rate-limits this call — it's non-fatal to the overall
+    // validation either way, so a second failure just skips the check).
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const prSearchQuery = `type:pr is:open repo:${owner}/${repo} ${issueNumber}`;
+        const prSearchResults = await octokit.rest.search.issuesAndPullRequests({
+          q: prSearchQuery,
+          per_page: 5,
+        });
 
-      const activeLinkedPR = (prSearchResults.data.items || []).find((prItem: any) => {
-        if (!prItem.pull_request) return false;
-        if (prItem.state !== 'open') return false;
+        const activeLinkedPR = (prSearchResults.data.items || []).find((prItem: any) => {
+          if (!prItem.pull_request) return false;
+          if (prItem.state !== 'open') return false;
 
-        const prText = `${prItem.title} ${prItem.body || ''}`.toLowerCase();
-        const issueRefPattern = new RegExp(`(#${issueNumber}\\b|issues/${issueNumber}\\b|fix(es)?\\s+#?${issueNumber}\\b|close(s)?\\s+#?${issueNumber}\\b|resolve(s)?\\s+#?${issueNumber}\\b)`, 'i');
-        return issueRefPattern.test(prText);
-      });
+          const prText = `${prItem.title} ${prItem.body || ''}`.toLowerCase();
+          const issueRefPattern = new RegExp(`(#${issueNumber}\\b|issues/${issueNumber}\\b|fix(es)?\\s+#?${issueNumber}\\b|close(s)?\\s+#?${issueNumber}\\b|resolve(s)?\\s+#?${issueNumber}\\b)`, 'i');
+          return issueRefPattern.test(prText);
+        });
 
-      if (activeLinkedPR) {
-        return {
-          isValid: false,
-          reason: 'ACTIVE_PR_EXISTS',
-          hasActivePr: true,
-          activePrUrl: activeLinkedPR.html_url,
-          activePrNumber: activeLinkedPR.number,
-          statusCode: 200,
-          issueData,
-          repoData,
-        };
+        if (activeLinkedPR) {
+          return {
+            isValid: false,
+            reason: 'ACTIVE_PR_EXISTS',
+            hasActivePr: true,
+            activePrUrl: activeLinkedPR.html_url,
+            activePrNumber: activeLinkedPR.number,
+            statusCode: 200,
+            issueData,
+            repoData,
+          };
+        }
+        break;
+      } catch (prSearchErr: any) {
+        if (attempt === 0) {
+          const waited = await waitForGitHubRateLimit(
+            prSearchErr,
+            `Active PR check for ${owner}/${repo}#${issueNumber}`,
+            options?.onRateLimitWait
+          );
+          if (waited) continue; // retry once now that GitHub's own cooldown has elapsed
+        }
+        console.warn(`[GitHub Validation] Active PR check skipped:`, prSearchErr?.message);
+        break;
       }
-    } catch (prSearchErr: any) {
-      console.warn(`[GitHub Validation] Active PR check skipped:`, prSearchErr?.message);
     }
 
     // 4. Compute candidate quality score
@@ -841,16 +936,21 @@ export async function searchIssues(options: SearchIssueOptions): Promise<GitHubI
     queryString += ` org:${options.company}`;
   }
 
-  // GitHub Search silently returns ZERO results (not an error) once a query
-  // exceeds its cap of ~5 combined AND/OR/NOT operators — every clause below
-  // is kept to at most one OR (2 alternatives) so the worst case (difficulty
-  // + issueType + tech, all active at once) stays safely under that limit.
+  // GitHub Search silently returns ZERO results (not an error, no message)
+  // both once a query exceeds its cap of ~5 combined AND/OR/NOT operators,
+  // and — separately and more surprisingly — when a parenthesized `(label:X
+  // OR label:Y)` group is combined with enough other qualifiers (org: +
+  // archived: + no:assignee together reproducibly zeroed real, verified-
+  // nonempty results as soon as the label filter became an OR-group, even
+  // well under the operator cap). A single label carries the same signal
+  // ("good first issue" is by far the dominant convention) without any of
+  // that risk, so every difficulty tier uses one label, never an OR-group.
   if (options.difficulty === 'beginner') {
-    queryString += ` (label:"good first issue" OR label:"help wanted")`;
+    queryString += ` label:"good first issue"`;
   } else if (options.difficulty === 'intermediate') {
-    queryString += ` (label:"help wanted" OR label:"bug")`;
+    queryString += ` label:"help wanted"`;
   } else if (options.difficulty === 'advanced') {
-    queryString += ` (label:"complex" OR label:"architecture")`;
+    queryString += ` label:"architecture"`;
   }
 
   if (options.issueType === 'bug') {
@@ -863,9 +963,18 @@ export async function searchIssues(options: SearchIssueOptions): Promise<GitHubI
     queryString += ` label:enhancement`;
   }
 
+  // The generic tech-stack free-text filter only exists to steer an
+  // otherwise-unscoped search — it matches literal word mentions in an
+  // issue's title/body, not a repo's actual language, so it's a weak signal
+  // that reliably zeroes out results once combined with other filters. Once
+  // the user has explicitly targeted a specific org or repo, that scoping is
+  // already far more precise than any tech keyword could be, so skip it
+  // entirely rather than let it fight the org/repo filter to zero results.
+  const isExplicitlyScoped = Boolean(options.company || options.repo);
+
   if (options.query) {
     queryString += ` ${options.query}`;
-  } else {
+  } else if (!isExplicitlyScoped) {
     // GitHub's search ANDs space-separated bare terms, so joining tech names
     // with plain spaces required an issue to mention ALL of them at once —
     // almost never true — which silently starved every search down to zero
@@ -877,17 +986,33 @@ export async function searchIssues(options: SearchIssueOptions): Promise<GitHubI
     queryString += ` (${stack.slice(0, 2).map((t) => `"${t}"`).join(' OR ')})`;
   }
 
-  queryString += ` stars:>30`;
+  // Similarly, a star-count floor makes sense for broad, unscoped discovery
+  // (filtering out low-signal repos) but is actively wrong once the user
+  // named a specific org/repo — they already chose it, stars are irrelevant.
+  if (!isExplicitlyScoped) {
+    queryString += ` stars:>30`;
+  }
 
   try {
-    const searchRes = await octokit.rest.search.issuesAndPullRequests({
-      q: queryString,
-      sort: 'updated',
-      order: 'desc',
-      per_page: Math.min(limit * 3, 30),
-    });
+    let searchRes;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        searchRes = await octokit.rest.search.issuesAndPullRequests({
+          q: queryString,
+          sort: 'updated',
+          order: 'desc',
+          per_page: Math.min(limit * 3, 30),
+        });
+        break;
+      } catch (searchErr: any) {
+        if (attempt === 0 && (await waitForGitHubRateLimit(searchErr, 'GitHub issue search', options.onRateLimitWait))) {
+          continue; // retry once now that GitHub's own cooldown has elapsed
+        }
+        throw searchErr;
+      }
+    }
 
-    const rawItems = searchRes.data.items || [];
+    const rawItems = searchRes!.data.items || [];
     const validatedCandidates: GitHubIssueItem[] = [];
 
     for (let i = 0; i < rawItems.length; i++) {
@@ -908,6 +1033,7 @@ export async function searchIssues(options: SearchIssueOptions): Promise<GitHubI
       const validation = await validateIssueCandidate(owner, repo, item.number, {
         octokitInstance: octokit,
         targetTechStack: options.techStack,
+        onRateLimitWait: options.onRateLimitWait,
       });
 
       if (!validation.isValid) continue;
