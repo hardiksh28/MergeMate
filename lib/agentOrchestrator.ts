@@ -1322,8 +1322,17 @@ export async function runAutonomousAgentWorkflow(
       }
     }
 
-    // Check 3: Run Targeted Tests (if command available)
-    if (verificationCommands.targetedTestCmd) {
+    // Check 3: Run Targeted Tests (only meaningful against a real local
+    // checkout of the target repo — without one, `cwd` would silently fall
+    // back to MergeMate's own project directory, where the target repo's
+    // test paths don't exist, making every real-world repo with tests fail
+    // this check regardless of whether the generated patch is correct).
+    if (verificationCommands.targetedTestCmd && !workingDirectory && !mockCommandExecutor) {
+      verificationReport.targetedTests = 'skipped';
+      verificationReport.environmentLimitations.push(
+        `Targeted tests skipped: no local checkout of ${selectedIssue.repo_full_name} is available to run "${verificationCommands.targetedTestCmd}" against — verification relied on static AST analysis only.`
+      );
+    } else if (verificationCommands.targetedTestCmd) {
       pushStep('RUNNING_TARGETED_TESTS', `Running Targeted Test Suite`, `Executing: ${verificationCommands.targetedTestCmd}`);
       const testRes = await executeSafeCommand(verificationCommands.targetedTestCmd, {
         cwd: workingDirectory,
@@ -1352,8 +1361,15 @@ export async function runAutonomousAgentWorkflow(
       }
     }
 
-    // Check 4: Run Typechecking
-    if (verificationCommands.typecheckCmd) {
+    // Check 4: Run Typechecking (same local-checkout constraint as above —
+    // `npx tsc --noEmit` with no real cwd would just typecheck MergeMate's
+    // own codebase instead of the patched target repo).
+    if (verificationCommands.typecheckCmd && !workingDirectory && !mockCommandExecutor) {
+      verificationReport.typecheck = 'skipped';
+      verificationReport.environmentLimitations.push(
+        `Typecheck skipped: no local checkout of ${selectedIssue.repo_full_name} is available to run "${verificationCommands.typecheckCmd}" against — verification relied on static AST analysis only.`
+      );
+    } else if (verificationCommands.typecheckCmd) {
       pushStep('RUNNING_TYPECHECK', 'Running Typecheck', `Executing: ${verificationCommands.typecheckCmd}`);
       const typeRes = await executeSafeCommand(verificationCommands.typecheckCmd, {
         cwd: workingDirectory,
