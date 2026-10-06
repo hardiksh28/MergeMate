@@ -5,6 +5,18 @@ const KEY = process.env.MERGEMATE_SUPABASE_SERVICE_KEY;
 
 export const dbConfigured = () => !!(URL_ && KEY);
 
+/** Which Supabase role the configured key acts as, without revealing the key. */
+export function keyRole(): string {
+  if (!KEY) return "missing";
+  if (KEY.startsWith("sb_secret_")) return "service_role";
+  if (KEY.startsWith("sb_publishable_")) return "anon (publishable key)";
+  try {
+    return JSON.parse(Buffer.from(KEY.split(".")[1], "base64url").toString()).role || "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 export async function rpc<T>(fn: string, args: Record<string, unknown> = {}): Promise<T> {
   if (!dbConfigured()) throw new Error("Database not configured");
   const res = await fetch(`${URL_}/rest/v1/rpc/${fn}`, {

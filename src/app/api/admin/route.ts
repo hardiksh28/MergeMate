@@ -1,4 +1,4 @@
-import { dbConfigured, isAdmin, rpc } from "@/lib/db";
+import { dbConfigured, isAdmin, keyRole, rpc } from "@/lib/db";
 import { cityResidents } from "@/lib/mergecity";
 import { getSession, oauthConfigured } from "@/lib/session";
 
@@ -32,6 +32,11 @@ export async function GET() {
       },
     });
   } catch (e) {
-    return Response.json({ error: "query", detail: (e as Error).message }, { status: 500 });
+    const role = keyRole();
+    const detail =
+      role !== "service_role"
+        ? `MERGEMATE_SUPABASE_SERVICE_KEY is the ${role} key. It must be the service_role (secret) key from Supabase → Project Settings → API Keys.`
+        : (e as Error).message;
+    return Response.json({ error: "query", detail }, { status: 500 });
   }
 }

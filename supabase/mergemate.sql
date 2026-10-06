@@ -121,3 +121,11 @@ revoke execute on function public.mm_touch_user(bigint, text, text, text) from p
 revoke execute on function public.mm_log_event(bigint, text, text, jsonb) from public, anon, authenticated;
 revoke execute on function public.mm_user_activity(text) from public, anon, authenticated;
 revoke execute on function public.mm_admin_stats() from public, anon, authenticated;
+
+-- The server's secret key acts as service_role: grant it explicitly instead of relying on project defaults.
+grant all on public.mm_users, public.mm_events to service_role;
+grant usage, select on sequence public.mm_events_id_seq to service_role;
+grant execute on function public.mm_touch_user(bigint, text, text, text) to service_role;
+grant execute on function public.mm_log_event(bigint, text, text, jsonb) to service_role;
+grant execute on function public.mm_user_activity(text) to service_role;
+grant execute on function public.mm_admin_stats() to service_role;
