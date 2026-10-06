@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { gh } from "@/lib/github";
 import { setSession } from "@/lib/session";
+import { logEvent, touchUser } from "@/lib/db";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
@@ -32,6 +33,8 @@ export async function GET(req: Request) {
   try {
     const u = await gh<{ login: string; id: number; name: string | null; avatar_url: string }>("/user", { token: tok.access_token });
     await setSession({ login: u.login, id: u.id, name: u.name, avatar: u.avatar_url, token: tok.access_token });
+    await touchUser({ id: u.id, login: u.login, name: u.name, avatar: u.avatar_url });
+    await logEvent("signin", { id: u.id, login: u.login });
   } catch {
     return fail("token");
   }

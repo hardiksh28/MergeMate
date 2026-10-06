@@ -2,6 +2,7 @@
 import { promises as fs } from "fs";
 import path from "path";
 import type { Day } from "./github";
+import { dbConfigured, rpc } from "./db";
 
 // Vercel's filesystem is read-only except /tmp, which is wiped when an instance recycles.
 // Fine for a trial; move this to a database before relying on the graph.
@@ -47,9 +48,25 @@ export function recordActivity(username: string, kind: ActivityKind, date = new 
 
 const level = (n: number) => (n === 0 ? 0 : n <= 2 ? 1 : n <= 4 ? 2 : n <= 7 ? 3 : 4);
 
+/** One user's day -> kind -> count map: from the database when configured, else the local file. */
+async function userLog(username: string): Promise<Log[string]> {
+  if (dbConfigured()) {
+    try {
+      const rows = await rpc<{ day: string; kind: ActivityKind; n: number }[]>("mm_user_activity", { p_login: username });
+      const log: Log[string] = {};
+      for (const r of rows || []) (log[r.day] ||= {})[r.kind] = r.n;
+      return log;
+    } catch (e) {
+      console.warn("[activity] db read failed:", (e as Error).message);
+      return {};
+    }
+  }
+  return (await read())[username.toLowerCase()] || {};
+}
+
 /** Last 53 weeks of MergeMate activity, same shape as the GitHub calendar, plus totals. */
 export async function getActivity(username: string) {
-  const log = (await read())[username.toLowerCase()] || {};
+  const log = await userLog(username);
   const days: Day[] = [];
   const end = new Date();
   const start = new Date(end);

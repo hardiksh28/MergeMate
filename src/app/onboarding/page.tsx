@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, Check, FileText, Plus, Upload, X } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { ErrorBox, GithubIcon, Loader } from "@/components/ui";
-import { api, signInHref, useLocal, useSession, type Profile } from "@/lib/client";
+import { api, logActivity, signInHref, useLocal, useSession, type Profile } from "@/lib/client";
 
 type Analyzed = {
   user: { login: string; name: string | null; avatar: string; bio: string | null; repos: number; followers: number };
@@ -101,6 +101,7 @@ function Onboarding() {
       weeklyGoal: goal,
       createdAt: new Date().toISOString(),
     });
+    logActivity("onboard", { languages: langs.slice(0, 3).join(","), level });
     router.push("/app");
   }
 

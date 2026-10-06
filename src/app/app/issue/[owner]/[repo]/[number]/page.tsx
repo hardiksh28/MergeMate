@@ -103,7 +103,7 @@ export default function Workspace({ params }: { params: Promise<{ owner: string;
     try {
       const ctx = await api<Ctx>("/api/workspace/context", { method: "POST", json: { owner, repo, number: Number(number) } });
       markStarted(id, { title: ctx.issue.title, repo: ctx.repo.full });
-      logActivity("start");
+      logActivity("start", { issue: id });
       update({ ctx, stage: "understand" });
     } catch (e) {
       setError((e as Error).message);
@@ -208,7 +208,7 @@ export default function Workspace({ params }: { params: Promise<{ owner: string;
         },
       });
       update({ submitted: r });
-      logActivity("pr");
+      logActivity("pr", { issue: id, url: r.url });
       setStage(id, "submitted");
     } catch (e) {
       setError((e as Error).message);

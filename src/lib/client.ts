@@ -85,12 +85,12 @@ export function useLocal<T>(key: keyof typeof K, fallback: T) {
 }
 
 /** Fire-and-forget: adds a square to the user's MergeMate activity graph. */
-export function logActivity(kind: "start" | "guess" | "fix" | "check" | "pr" | "prep" | "reply") {
+export function logActivity(kind: "onboard" | "start" | "guess" | "fix" | "check" | "pr" | "prep" | "reply", meta?: Record<string, string | number>) {
   // the server attributes it to the signed-in GitHub account; ignored when signed out
   fetch("/api/activity", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ kind }),
+    body: JSON.stringify({ kind, meta }),
   }).catch(() => {});
 }
 

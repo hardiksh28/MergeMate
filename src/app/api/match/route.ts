@@ -1,5 +1,6 @@
 import { gh, getRepo, userLanguages, repoFromUrl, type Issue, type Repo } from "@/lib/github";
 import { errorResponse } from "@/lib/groq";
+import { logEvent } from "@/lib/db";
 
 export type Match = {
   id: string;
@@ -131,6 +132,7 @@ export async function GET(req: Request) {
       });
     }
     matches.sort((a, b) => b.score - a.score);
+    if (username && url.searchParams.get("limit") === "3") await logEvent("match", null, { username }); // landing "try it"
     return Response.json({ langs, matches: matches.slice(0, limit) });
   } catch (e) {
     return errorResponse(e);
