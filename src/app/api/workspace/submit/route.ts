@@ -15,7 +15,8 @@ export async function POST(req: Request) {
         { status: 401 },
       );
     }
-    const { repo, branch, issueNumber, title, body, draft, files } = (await req.json()) as {
+    const { repo, branch, issueNumber, title, body, draft, files, dco } = (await req.json()) as {
+      dco?: boolean;
       repo: string;
       branch: string;
       issueNumber: number;
@@ -26,7 +27,10 @@ export async function POST(req: Request) {
     };
     if (!files?.length) return Response.json({ error: "No changes to submit" }, { status: 400 });
 
-    const me = await gh<{ login: string }>("/user", { token });
+    const me = await gh<{ login: string; id: number; name: string | null }>("/user", { token });
+    // DCO projects reject commits without a Signed-off-by trailer matching the commit author.
+    const identity = { name: me.name || me.login, email: `${me.id}+${me.login}@users.noreply.github.com` };
+    const signOff = dco ? `\n\nSigned-off-by: ${identity.name} <${identity.email}>` : "";
 
     // 1. fork (idempotent: returns the existing fork if there is one)
     const fork = await gh<Repo>(`/repos/${repo}/forks`, { token, method: "POST", body: { default_branch_only: true } });
@@ -71,7 +75,8 @@ export async function POST(req: Request) {
         token,
         method: "PUT",
         body: {
-          message: files.length === 1 ? title : `${title} (${f.path})`,
+          message: (files.length === 1 ? title : `${title} (${f.path})`) + signOff,
+          ...(dco ? { author: identity, committer: identity } : {}),
           content: Buffer.from(f.content, "utf8").toString("base64"),
           branch: newBranch,
           ...(sha ? { sha } : {}),

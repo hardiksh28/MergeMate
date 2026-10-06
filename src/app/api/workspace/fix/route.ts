@@ -23,6 +23,7 @@ export async function POST(req: Request) {
     const ai = await aiJSON<FixAI>(
       req,
       `You are MergeMate, pairing with a developer on an open source fix. Produce the smallest correct change that a maintainer would happily merge. Match the project's existing code style exactly. Never touch unrelated code.
+If an existing test file is included, also add one focused test case for the fix in that file, matching its framework, imports and style exactly. Don't create new test files.
 Edits are search/replace blocks: "find" must be copied EXACTLY (including indentation) from the code shown, long enough to be unique (2-6 lines), and "replace" is the new text. Do not include "/* ... */" markers in find.`,
       `Repo: ${repo}\nIssue #${issue.number}: ${issue.title}\n${(issue.body || "").slice(0, 2500)}\n\n${guess ? `The developer thinks: """${String(guess).slice(0, 800)}"""\n` : ""}${tweak ? `Developer feedback on the previous draft: """${String(tweak).slice(0, 600)}"""\n` : ""}\nCode:\n${code}\n\nReturn {"rootCause": string (2 sentences, plain language), "steps": [{"title": string, "detail": string}] (2-5 steps describing the fix so the developer learns), "edits": [{"path": string, "find": string, "replace": string}], "whyItWorks": string (2-3 sentences), "testPlan": string[] (2-4 ways to verify), "prTitle": string (conventional, concise), "prBody": string (markdown: Summary, Changes, How to test; end with "Fixes #${issue.number}"), "confidence": "high"|"medium"|"low"}`,
       7000,

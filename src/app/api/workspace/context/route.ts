@@ -1,6 +1,6 @@
 import { codeSearch, gh, getRepo, getTree, rawFile, type Issue } from "@/lib/github";
 import { aiJSON, errorResponse } from "@/lib/groq";
-import { rankPaths, snippet } from "@/lib/snippets";
+import { findTestFile, rankPaths, snippet } from "@/lib/snippets";
 
 type Pick = { files: { path: string; why: string }[]; searchTerms: string[] };
 export type Explain = {
@@ -55,6 +55,13 @@ export async function POST(req: Request) {
       }
     }
     if (!chosen.length) throw new Error("Couldn't locate the relevant files for this issue. Try another one.");
+
+    // Bring the existing test file for the main source file, so the fix can add a test case too.
+    if (!chosen.some((c) => /test|spec/i.test(c.path))) {
+      const main = chosen[0]?.path;
+      const test = main ? findTestFile(main, tree.map((t) => t.path)) : null;
+      if (test) chosen = [...chosen.slice(0, 3), { path: test, why: "Existing tests for this code: add a case here" }];
+    }
 
     const files = (
       await Promise.all(

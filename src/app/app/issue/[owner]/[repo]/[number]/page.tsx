@@ -27,6 +27,8 @@ import { api, compact, getKeys, logActivity, markStarted, setStage, signInHref, 
 import type { Explain } from "@/app/api/workspace/context/route";
 import { ErrorBox, Loader, Rich } from "@/components/ui";
 import { DiffView, diffStat } from "@/components/Diff";
+import { CheckStage, type CheckResult } from "@/components/CheckStage";
+import { changesetContent, insertOwnWords, parseCheckboxes, toggleCheckbox, type Changeset } from "@/lib/pr";
 
 type Ctx = {
   issue: { number: number; title: string; body: string | null; url: string; author: string; labels: { name: string; color: string }[]; comments: { user: string; body: string }[] };
@@ -48,7 +50,7 @@ type Fix = {
   changes: { path: string; original: string; updated: string }[];
   failed: string[];
 };
-type Check = { guideFound: string | null; templateFound: string | null; cla?: { required: boolean; url: string | null }; rules: { rule: string; status: "pass" | "warn" | "fail"; note: string }[]; fixedTitle: string; fixedBody: string };
+type Check = CheckResult;
 type State = {
   stage: Stage;
   ctx?: Ctx;
@@ -60,6 +62,9 @@ type State = {
   title?: string;
   body?: string;
   ownWords?: string;
+  prevTitle?: string;
+  prevBody?: string;
+  changeset?: Changeset | null;
   submitted?: { url: string; number: number };
 };
 type Stage = "understand" | "find" | "fix" | "check" | "submit";
@@ -166,21 +171,51 @@ export default function Workspace({ params }: { params: Promise<{ owner: string;
     }
   }
 
-  const finalFiles = () =>
-    (s.fix?.changes || []).map((c) => ({ path: c.path, original: c.original, updated: s.edited?.[c.path] ?? c.updated })).filter((c) => c.updated !== c.original);
+  // Code changes, plus generated files (the changeset) unless codeOnly.
+  const finalFiles = (codeOnly = false) => {
+    const code = (s.fix?.changes || [])
+      .map((c) => ({ path: c.path, original: c.original, updated: s.edited?.[c.path] ?? c.updated }))
+      .filter((c) => c.updated !== c.original);
+    const cs = s.changeset;
+    return codeOnly || !cs?.include || !cs.summary.trim() ? code : [...code, { path: cs.path, original: "", updated: changesetContent(cs) }];
+  };
 
   async function runCheck() {
     if (!ctx || !s.fix) return;
     setBusy("check");
     setError("");
     try {
-      const files = finalFiles();
+      const files = finalFiles(true);
       const diff = files.map((f) => createTwoFilesPatch(f.path, f.path, f.original, f.updated, "", "", { context: 2 })).join("\n");
       const r = await api<Check>("/api/workspace/contributing", {
         method: "POST",
-        json: { repo: ctx.repo.full, branch: ctx.repo.branch, issueNumber: ctx.issue.number, prTitle: s.title, prBody: s.body, changedPaths: files.map((f) => f.path), diff },
+        json: {
+          repo: ctx.repo.full,
+          branch: ctx.repo.branch,
+          issueNumber: ctx.issue.number,
+          issueTitle: ctx.issue.title,
+          prTitle: s.title,
+          prBody: s.body,
+          changedPaths: files.map((f) => f.path),
+          diff,
+        },
       });
-      update({ check: r, stage: "check" });
+      // Keep boxes the contributor already ticked when the body is regenerated.
+      const ticked = new Set(parseCheckboxes(s.body || "").filter((b) => b.checked).map((b) => b.label.toLowerCase()));
+      let body = r.fixedBody;
+      for (const b of parseCheckboxes(body)) if (!b.checked && ticked.has(b.label.toLowerCase())) body = toggleCheckbox(body, b.line, true);
+      const prev = s.changeset;
+      update({
+        check: r,
+        stage: "check",
+        prevTitle: s.prevTitle ?? s.title,
+        prevBody: s.prevBody ?? s.body,
+        title: r.fixedTitle,
+        body,
+        changeset: r.changeset
+          ? { ...r.changeset, include: prev?.include ?? true, summary: prev?.path === r.changeset.path ? prev.summary : r.changeset.summary, bump: prev?.bump ?? r.changeset.bump }
+          : null,
+      });
       logActivity("check");
     } catch (e) {
       setError((e as Error).message);
@@ -194,7 +229,7 @@ export default function Workspace({ params }: { params: Promise<{ owner: string;
     setBusy("submit");
     setError("");
     try {
-      const body = `${s.ownWords?.trim() ? `### In my words\n${s.ownWords.trim()}\n\n` : ""}${s.body || ""}`;
+      const body = insertOwnWords(s.body || "", s.ownWords || "");
       const r = await api<{ url: string; number: number }>("/api/workspace/submit", {
         method: "POST",
         json: {
@@ -205,6 +240,7 @@ export default function Workspace({ params }: { params: Promise<{ owner: string;
           body,
           draft,
           files: finalFiles().map((f) => ({ path: f.path, content: f.updated })),
+          dco: !!s.check?.dco,
         },
       });
       update({ submitted: r });
@@ -326,52 +362,20 @@ export default function Workspace({ params }: { params: Promise<{ owner: string;
               )}
 
               {s.stage === "check" && s.check && (
-                <section className="space-y-5 animate-rise">
-                  <div className="card p-6">
-                    <div className="flex items-center gap-2 text-sky"><ShieldCheck className="h-5 w-5" /><p className="label text-sky">contribution check</p></div>
-                    <h2 className="font-display mt-3 text-2xl font-bold">
-                      {s.check.guideFound ? <>Checked against <code className="inline">{s.check.guideFound}</code></> : "No CONTRIBUTING.md, so we used standard open source etiquette"}
-                    </h2>
-                    {s.check.cla?.required && (
-                      <div className="mt-5 rounded-2xl border border-orange/40 bg-orange/[0.07] p-4 text-sm">
-                        <p className="font-semibold text-orange">✍️ This project needs a signed CLA</p>
-                        <p className="mt-1 text-ink/80">
-                          A Contributor License Agreement is a one-time legal sign-off. Their bot will block the PR until you sign it with the same GitHub account (and commit email) you submit from.
-                        </p>
-                        {s.check.cla.url && (
-                          <a href={s.check.cla.url} target="_blank" rel="noreferrer" className="btn-ghost mt-3 py-1.5 text-xs">
-                            Sign the agreement <ExternalLink className="h-3.5 w-3.5" />
-                          </a>
-                        )}
-                      </div>
-                    )}
-                    <ul className="mt-5 space-y-2">
-                      {s.check.rules.map((r, i) => (
-                        <li key={i} className="flex gap-3 rounded-2xl bg-surface-2 p-3 text-sm">
-                          <span className="mt-0.5 text-base">{r.status === "pass" ? "✅" : r.status === "warn" ? "⚠️" : "❌"}</span>
-                          <div>
-                            <p className="font-semibold">{r.rule}</p>
-                            <p className="text-muted"><Rich text={r.note} /></p>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                  <div className="card p-6">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="label">Pull request</p>
-                      <button className="btn-ghost py-1.5 text-xs" onClick={() => update({ title: s.check!.fixedTitle, body: s.check!.fixedBody })}>
-                        <Wand2 className="h-3.5 w-3.5" /> Apply suggested fixes
-                      </button>
-                    </div>
-                    <input className="input mt-3 font-semibold" value={s.title || ""} onChange={(e) => update({ title: e.target.value })} />
-                    <textarea className="input mt-3 min-h-56 font-mono text-[12.5px]" value={s.body || ""} onChange={(e) => update({ body: e.target.value })} />
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      <button className="btn-ghost" disabled={!!busy} onClick={runCheck}><RefreshCw className={`h-4 w-4 ${busy === "check" ? "animate-spin" : ""}`} /> Re-check</button>
-                      <button className="btn-lime" onClick={() => update({ stage: "submit" })}>Looks good <ArrowRight className="h-4 w-4" /></button>
-                    </div>
-                  </div>
-                </section>
+                <CheckStage
+                  check={s.check}
+                  title={s.title || ""}
+                  body={s.body || ""}
+                  changeset={s.changeset || null}
+                  canUndo={s.prevBody !== undefined && s.prevBody !== s.body}
+                  busy={busy}
+                  onTitle={(v) => update({ title: v })}
+                  onBody={(v) => update({ body: v })}
+                  onChangeset={(c) => update({ changeset: c })}
+                  onUndo={() => update({ title: s.prevTitle, body: s.prevBody, prevTitle: undefined, prevBody: undefined })}
+                  onRecheck={runCheck}
+                  onNext={() => update({ stage: "submit" })}
+                />
               )}
               {busy === "check" && s.stage !== "check" && <Loader lines={["Reading CONTRIBUTING.md…", "Checking the PR template…", "Making sure maintainers will like it…"]} />}
 

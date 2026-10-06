@@ -1,3 +1,28 @@
+/** Test files across common ecosystems (JS/TS, Python, Go). */
+export const TEST_RE = /(^|\/)(__tests__|tests?|spec)\/|\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.(go|py)$/i;
+
+/** The existing test file for a source file, if the repo has one (same base name, closest directory wins). */
+export function findTestFile(source: string, allPaths: string[]) {
+  if (TEST_RE.test(source)) return null;
+  const base = source.split("/").pop()!.replace(/\.[^.]+$/, "").toLowerCase();
+  if (base.length < 3 || base === "index") return null;
+  const dir = source.split("/").slice(0, -1);
+  const scored = allPaths
+    .filter((p) => TEST_RE.test(p))
+    .filter((p) => {
+      const b = p.split("/").pop()!.toLowerCase();
+      return b.startsWith(base + ".") || b.startsWith(base + "_test") || b === `test_${base}.py` || b.startsWith(`${base}-`);
+    })
+    .map((p) => {
+      const pd = p.split("/");
+      let shared = 0;
+      while (shared < dir.length && pd[shared] === dir[shared]) shared++;
+      return { p, shared };
+    })
+    .sort((a, b) => b.shared - a.shared);
+  return scored[0]?.p || null;
+}
+
 // Keeps prompts small: send whole files when short, otherwise numbered windows around relevant lines.
 const MAX_FILE_CHARS = 7000;
 
