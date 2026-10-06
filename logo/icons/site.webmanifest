@@ -1,0 +1,11 @@
+{
+  "name": "MergeMate",
+  "short_name": "MergeMate",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/maskable-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ],
+  "theme_color": "#08080a",
+  "background_color": "#08080a",
+  "display": "standalone"
+}

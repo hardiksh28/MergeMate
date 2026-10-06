@@ -1,0 +1,32 @@
+{
+  "brand": "MergeMate",
+  "tagline": "Ship real open source. Get hired for it.",
+  "brief": "MergeMate finds open-source issues that fit a developer's skills, explains the codebase like a senior dev, preps the fix with them, and turns merged PRs into proof recruiters read. The mark should feel friendly, confident and dev-native, and avoid the stock git-branch icon every dev tool uses.",
+  "adjectives": ["friendly", "confident", "dev-native", "bold"],
+  "criteria": "Success: ownable among dev tools, holds at 16 px, works in one colour, carries the existing lime + ink equity.",
+  "industry": "software",
+  "nav": ["How it works", "Pricing", "Join waitlist"],
+  "brand_color": "#d4ff3a",
+  "greyscale": false,
+  "designer": "MergeMate",
+  "round": 2,
+  "concepts": [
+    {
+      "name": "Merge m",
+      "symbol": "../svg/mergemate-symbol.svg",
+      "lockup": "../svg/mergemate-horizontal.svg",
+      "symbol_on_tile": "../svg/mergemate-symbol.svg",
+      "tile_color": "#d4ff3a",
+      "lockup_on_dark": "../svg/mergemate-horizontal-on-dark.svg",
+      "idea": "A lowercase m whose two arches share one stem, landing on a commit node: two arches, one merge.",
+      "rationale": [
+        "Initial and merge in one form, so it doesn't look like the stock git icon",
+        "Bold arches match the heavy Bricolage wordmark",
+        "Pixel-tuned favicon cut holds at 16 px",
+        "Lime tile + ink mark carries the site's existing palette"
+      ]
+    }
+  ],
+  "recommendation": "Final direction: Merge m. Lime #d4ff3a with ink #0b0d02, wordmark in Bricolage Grotesque Bold, outlined.",
+  "next_steps": ["Swap the in-app LogoMark and favicon", "Trademark search before wider launch", "Social avatars and OG image"]
+}
