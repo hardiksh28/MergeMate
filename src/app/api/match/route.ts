@@ -61,7 +61,7 @@ export async function GET(req: Request) {
       return true;
     });
 
-    const repoNames = issues.slice(0, 24).map((i) => repoFromUrl(i.repository_url));
+    const repoNames = issues.slice(0, 16).map((i) => repoFromUrl(i.repository_url));
     const repos = new Map<string, Repo>();
     await Promise.all(
       repoNames.map(async (n) => {

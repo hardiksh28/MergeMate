@@ -11,18 +11,30 @@ export class GHError extends Error {
 
 const cache = new Map<string, { at: number; data: unknown }>();
 
-export async function gh<T>(
-  path: string,
-  opts: { token?: string; method?: string; body?: unknown; ttl?: number } = {},
-): Promise<T> {
-  const { token, method = "GET", body, ttl = 0 } = opts;
-  const authToken = token || process.env.GITHUB_TOKEN;
-  const cacheKey = method === "GET" && !token ? path : "";
-  if (cacheKey && ttl) {
-    const hit = cache.get(cacheKey);
-    if (hit && Date.now() - hit.at < ttl * 1000) return hit.data as T;
+// GitHub's secondary rate limit punishes bursts, not volume. Keep at most 6 calls in flight and
+// space search calls ~400ms apart (search has its own, much stricter budget).
+const MAX_PARALLEL = 6;
+let active = 0;
+const waiting: (() => void)[] = [];
+async function slot<T>(fn: () => Promise<T>): Promise<T> {
+  if (active >= MAX_PARALLEL) await new Promise<void>((r) => waiting.push(r));
+  active++;
+  try {
+    return await fn();
+  } finally {
+    active--;
+    waiting.shift()?.();
   }
-  const res = await fetch(path.startsWith("http") ? path : API + path, {
+}
+let searchChain: Promise<unknown> = Promise.resolve();
+function spaced<T>(fn: () => Promise<T>): Promise<T> {
+  const run = searchChain.then(fn, fn);
+  searchChain = run.catch(() => {}).then(() => new Promise((r) => setTimeout(r, 400)));
+  return run;
+}
+
+async function request(url: string, method: string, body: unknown, authToken?: string) {
+  return fetch(url, {
     method,
     headers: {
       Accept: "application/vnd.github+json",
@@ -34,14 +46,42 @@ export async function gh<T>(
     body: body ? JSON.stringify(body) : undefined,
     cache: "no-store",
   });
+}
+
+export async function gh<T>(
+  path: string,
+  opts: { token?: string; method?: string; body?: unknown; ttl?: number } = {},
+): Promise<T> {
+  const { token, method = "GET", body, ttl = 0 } = opts;
+  const authToken = token || process.env.GITHUB_TOKEN;
+  const cacheKey = method === "GET" && !token ? path : "";
+  if (cacheKey && ttl) {
+    const hit = cache.get(cacheKey);
+    if (hit && Date.now() - hit.at < ttl * 1000) return hit.data as T;
+  }
+  const url = path.startsWith("http") ? path : API + path;
+  const isSearch = path.startsWith("/search/");
+  const send = (t?: string) => slot(() => request(url, method, body, t));
+  let res = await (isSearch ? spaced(() => send(authToken)) : send(authToken));
+
+  // Server token throttled on a read: one anonymous retry (separate per-IP budget). Never for a user's own token.
+  if (res.status === 403 && method === "GET" && authToken && !token) {
+    const peek = await res.clone().text();
+    if (/secondary rate limit|rate limit/i.test(peek)) res = await (isSearch ? spaced(() => send()) : send());
+  }
+
   if (!res.ok) {
     const text = await res.text();
     let msg = text.slice(0, 200);
     try {
       msg = JSON.parse(text).message || msg;
     } catch {}
-    if (res.status === 403 && /rate limit/i.test(msg)) {
-      msg = "GitHub rate limit hit. Add GITHUB_TOKEN to .env.local to get 5000 requests/hour.";
+    if ((res.status === 403 || res.status === 429) && /secondary rate limit/i.test(msg)) {
+      msg = "GitHub is throttling requests for a moment. Try again in a minute or two.";
+    } else if ((res.status === 403 || res.status === 429) && /rate limit/i.test(msg)) {
+      msg = authToken
+        ? "GitHub's hourly limit is used up. It resets within the hour."
+        : "GitHub rate limit hit. Add GITHUB_TOKEN to .env.local to get 5000 requests/hour.";
     }
     throw new GHError(`GitHub: ${msg}`, res.status);
   }
